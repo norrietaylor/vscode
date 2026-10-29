@@ -407,18 +407,25 @@ def main():
         open(marker, "w").close()
         if not exists:
             open(created, "w").close()  # so --remove may delete the file again
-    if a.remove:
+
+    # --remove opts out only once the file is clean: a failed write keeps the
+    # opt-in, so sync goes on and setup --remove can run again
+    def opt_out():
         for f in (marker, created):
-            if f and os.path.exists(f):
+            if a.remove and f and os.path.exists(f):
                 os.unlink(f)
-                if f == created and exists and result == {} and not os.path.islink(a.settings):
-                    os.unlink(a.settings)
-                    print(f"removed {a.settings}, which {TOOL} created and is empty again")
-                    return
+
+    if a.remove and created and os.path.exists(created) and exists and result == {} and not os.path.islink(a.settings):
+        os.unlink(a.settings)
+        opt_out()
+        print(f"removed {a.settings}, which {TOOL} created and is empty again")
+        return
     if (exists and result == current and target.count(BEGIN) == text.count(BEGIN) and OLD_END not in text) or (not exists and a.remove):
+        opt_out()
         print(f"{a.settings}: already {'clean' if a.remove else 'up to date'}; nothing to do")
         return
     backup = write(a.settings, a.state, out_text)
+    opt_out()
     verb = f"removed {TOOL} entries from" if a.remove else "updated"
     print(f"{verb} {a.settings}" + (f" (previous version: {backup})" if backup else ""))
 

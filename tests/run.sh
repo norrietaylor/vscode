@@ -996,7 +996,16 @@ case_setup_remove_stops_when_config_refuses() {
     assert_file "$HOME/$CONF"
     assert_file_contains "$HOME/.ssh/config" "$MARK2"
     assert_file "$STATE/settings-installed"
-    printf '{}\n' > "$SETTINGS"
+    # a write that fails (no backup dir) keeps the opt-in too
+    printf '{"editor.fontSize": 14}\n' > "$SETTINGS"
+    run config
+    assert_rc 0
+    rm -rf "$STATE/backups" && : > "$STATE/backups"
+    run setup --remove
+    assert_rc 1
+    [ -L "$cl" ] || fail "CLI link removed after a failed write"
+    assert_file "$STATE/settings-installed"
+    rm "$STATE/backups"
     run setup --remove
     assert_rc 0
     assert_no_file "$cl"
