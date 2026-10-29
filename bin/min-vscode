@@ -77,8 +77,9 @@ pct() { printf '%s' "$1" | sed 's/%/%%/g'; }
 mn() { "$MIN" "$@"; }
 min_ls() { mn ls --json </dev/null; }
 # own_filter: min ls --json on stdin, narrowed to the sessions this tool has
-# prepared (a key dir under $STATE/sessions). gc and orphan reminders use only
-# these: other tools' boxes are theirs to tidy. own_ls: the same from min ls.
+# prepared (a key dir under $STATE/sessions). gc, orphan reminders, open's
+# reuse, destroy's cwd lookup, the attach picker and completions use only
+# these: other tools' boxes are theirs. own_ls: the same from min ls.
 own_filter() {
     ol_mine=$(for s in "$STATE"/sessions/*/; do if [ -d "$s" ]; then basename "$s"; fi; done)
     jq --arg m "$ol_mine" '($m | split("\n")) as $k | .sessions |= map(select(.name as $n | $k | index([$n])))'
@@ -548,15 +549,16 @@ valid_name() {
     [ "$(printf '%s.' "$1" | LC_ALL=C tr -d 'a-z0-9-')" = . ]
 }
 
-# pick_session CMD: numbered picker on the terminal; prints the chosen name.
+# pick_session CMD: numbered picker of own sessions on the terminal; prints the
+# chosen name.
 pick_session() {
     [ -t 0 ] || die "$1: NAME required when stdin is not a terminal"
-    min_ls | jq -r '.sessions[] | [.name, .status, (.project_path // "")] | @tsv' \
+    own_ls | jq -r '.sessions[] | [.name, .status, (.project_path // "")] | @tsv' \
         | awk -F'\t' '{ printf "%2d) %-28s %-13s %s\n", NR, $1, $2, $3 }' >&2
     printf 'session number: ' >&2
     read -r n
     case $n in ''|*[!0-9]*|0) die "no such entry" ;; esac
-    pn=$(min_ls | jq -r --argjson n "$n" '.sessions[$n - 1].name // empty') \
+    pn=$(own_ls | jq -r --argjson n "$n" '.sessions[$n - 1].name // empty') \
         || die "no such entry"
     [ -n "$pn" ] || die "no such entry"
     valid_name "$pn" || die "session name is not lowercase letters, digits and dashes; not using it: $(printf '%s' "$pn" | LC_ALL=C tr -c '[:print:]' '?')"
@@ -994,7 +996,7 @@ cmd_open() {
     path=$(CDPATH='' cd -P -- "$path" && pwd -P)
     [ -f "$SSH_CONF" ] || die "$EDITOR_NAME reaches the box as ssh ${HOST_PREFIX}NAME: run $TOOL ssh-config first ($TOOL setup does)"
     if [ "$mode" = open ] && [ -z "$name" ]; then
-        name=$(min_ls | jq -r --arg p "$path" '[.sessions[] | select(.status == "active" and .project_path == $p
+        name=$(own_ls | jq -r --arg p "$path" '[.sessions[] | select(.status == "active" and .project_path == $p
             and (.name | test("^[a-z0-9][a-z0-9-]*$"))) | .name][0] // empty')
     elif [ -n "$name" ] && [ -n "$gave" ] && sess_exists "$name" && [ "$(sess_field "$name" project_path)" != "$path" ]; then
         die "session $name is for $(sess_field "$name" project_path), not $path"
@@ -1042,7 +1044,7 @@ cmd_destroy() {
     done
     if [ -z "$name" ]; then
         here=$(pwd -P)
-        name=$(min_ls | jq -r --arg p "$here" '.sessions[] | select(.project_path == $p) | .name')
+        name=$(own_ls | jq -r --arg p "$here" '.sessions[] | select(.project_path == $p) | .name')
         case $(printf '%s\n' "$name" | grep -c .) in
             0) die "no session for $here; pass NAME" ;;
             1) ;;
@@ -1341,7 +1343,7 @@ case $cmd in
     gc) cmd_gc "$@" ;;
     ssh) cmd_ssh "$@" ;;
     status) cmd_status "$@" ;;
-    _sessions) min_ls | jq -r '.sessions[].name' ;;
+    _sessions) own_ls | jq -r '.sessions[].name' ;;
     _proxy) cmd_proxy "$@" ;;
     *) usage >&2; exit 2 ;;
 esac

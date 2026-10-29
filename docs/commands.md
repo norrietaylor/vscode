@@ -5,10 +5,10 @@ box, where `min-vscode` is not installed.
 
 | Command | Does |
 |---|---|
-| `min-vscode open [PATH] [-n NAME] [--no-window]` | the session for `PATH` (default `.`): a live one is reused, else one is activated with `--loadout vscode`; then VS Code opens `/workbench` in it. Prints `min-vscode.NAME` |
+| `min-vscode open [PATH] [-n NAME] [--no-window]` | the session for `PATH` (default `.`): a live one min-vscode made is reused, else one is activated with `--loadout vscode`; then VS Code opens `/workbench` in it. Prints `min-vscode.NAME` |
 | `min-vscode new [PATH \| --empty] [-n NAME] [--no-window]` | always a new session for `PATH`, then VS Code; `--empty`: an empty `/workbench` (`--sync none`), named by min (`box-<hex>`) |
-| `min-vscode attach [NAME] [--no-window]` | an existing session in VS Code (no NAME: pick one) |
-| `min-vscode destroy [-y] [--if-idle] [--force] [NAME]` | ask `[y/N]`, then destroy (no NAME: the one session for the current directory); `--if-idle` refuses with exit 3 while something is connected. Without a terminal, min refuses a session with unsaved changes: exit 4; `-y --force` discards them |
+| `min-vscode attach [NAME] [--no-window]` | an existing session in VS Code (no NAME: pick one of its own) |
+| `min-vscode destroy [-y] [--if-idle] [--force] [NAME]` | ask `[y/N]`, then destroy (no NAME: its one session for the current directory); `--if-idle` refuses with exit 3 while something is connected. Without a terminal, min refuses a session with unsaved changes: exit 4; `-y --force` discards them |
 | `min-vscode gc [--older-than SECONDS] [--dry-run]` | list active sessions no ssh client is using (oldest first), then ask `[y/N/q]` for each |
 | `min-vscode status [--json]` | table: session, status, project, in use, idle age; `--json`: `[{name, status, project, own, empty, in_use, idle}]` (idle in seconds or null) |
 | `min-vscode doctor` | health report; exits 1 on any FAIL |
@@ -33,7 +33,8 @@ become hostnames and ssh `Host` patterns; one that does not is refused.
 `gc` or `status` that saw the session unused (each run dates them).
 `gc` offers only sessions min-vscode has connected to (it has keys for them
 under `STATE/sessions/NAME`); boxes other tools or `min` alone made are not its
-to tidy.
+to tidy. `open`, `destroy` without NAME, the `attach` picker and completions
+pass them over too; `attach NAME` still reaches one by name.
 
 just recipes: `check`, `install`, `ssh-config`, `vscode-config`, `skills`,
 `uninstall`, `ext-deps`, `vsix`.

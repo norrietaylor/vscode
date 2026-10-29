@@ -61,7 +61,11 @@ the editor-specific constants, settings keys and loadout differ.
   way past `destroy`'s question.
 - `gc` offers only own sessions (`own_ls`: a key dir `STATE/sessions/NAME`),
   and `gc`/`status` date only those in `orphan/` (`track_orphans`, each run);
-  boxes made by `min` alone are never listed.
+  boxes made by `min` alone are never listed. The same holds wherever a
+  session is chosen for the user: `open`'s reuse of a live session for PATH,
+  `destroy`'s cwd lookup, the `attach` picker and `_sessions` (completions).
+  Only an explicit NAME (`attach NAME`, `destroy NAME`, `open -n NAME`) may
+  reach another tool's box.
 - In use = some host process runs `min session exec NAME ... sshd` (any ssh
   client's connection). Never contact a box without such a live process: a
   connect starts a stopped box.
