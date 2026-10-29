@@ -415,7 +415,9 @@ def main():
             if a.remove and f and os.path.exists(f):
                 os.unlink(f)
 
-    if a.remove and created and os.path.exists(created) and exists and result == {} and not os.path.islink(a.settings):
+    # empty again in its bytes too: a comment the user wrote keeps the file
+    if (a.remove and created and os.path.exists(created) and exists and re.fullmatch(r"\s*\{\s*\}\s*", target)
+            and not os.path.islink(a.settings)):
         os.unlink(a.settings)
         opt_out()
         print(f"removed {a.settings}, which {TOOL} created and is empty again")

@@ -654,6 +654,13 @@ case_merger_fresh_file_and_noop() {
     run_cfg --remove
     assert_no_file "$SETTINGS"
     assert_out_contains "created and is empty again"
+    # a created file the user has since written in (a comment) stays
+    run_cfg --install --sync a
+    { printf '// mine\n'; cat "$SETTINGS"; } > "$T/c.json" && cat "$T/c.json" > "$SETTINGS"
+    run_cfg --remove
+    assert_rc 0
+    assert_file_contains "$SETTINGS" "// mine"
+    [ "$(settings_get '.')" = "{}" ] || fail "our entries left in: $(cat "$SETTINGS")"
 }
 
 case_merger_keeps_users_local_server() {
