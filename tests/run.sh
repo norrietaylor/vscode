@@ -981,6 +981,28 @@ case_setup_installs_follows_and_removes() {
     assert_rc 1
 }
 
+# A settings file the merger refuses stops setup --remove before anything else goes.
+case_setup_remove_stops_when_config_refuses() {
+    cl=$HOME/.local/bin/$TOOL
+    ld=$HOME/.config/minimal/loadouts/vscode.toml
+    run setup
+    assert_rc 0
+    printf '{ broken' > "$SETTINGS"
+    run setup --remove
+    assert_rc 1
+    assert_err_contains "fix the file, then run $TOOL setup --remove again"
+    [ -L "$cl" ] || fail "CLI link removed"
+    [ -L "$ld" ] || fail "loadout link removed"
+    assert_file "$HOME/$CONF"
+    assert_file_contains "$HOME/.ssh/config" "$MARK2"
+    assert_file "$STATE/settings-installed"
+    printf '{}\n' > "$SETTINGS"
+    run setup --remove
+    assert_rc 0
+    assert_no_file "$cl"
+    assert_no_file "$HOME/$CONF"
+}
+
 # loadout_hook N: the Nth (from 0) inline on_activate script of the loadout,
 # between the lines `on_activate.value = '''` and `'''`.
 loadout_hook() {
@@ -1719,7 +1741,7 @@ settings_untouched_before_opt_in settings_follow_sessions settings_sync_skipped_
 config_print_and_bad_option config_and_doctor_keep_entries_when_min_ls_fails merger_remove_restores_framing merger_fresh_file_and_noop merger_keeps_users_local_server
 merger_symlink_written_through merger_preserves_foreign_entries_vscode_put_in_block
 merger_moves_foreign_keys_out_of_block merger_upgrades_old_block merger_bad_jsonc_left_alone doctor_rows doctor_min_version
-new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes
+new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes setup_remove_stops_when_config_refuses
 loadout_rc_line_once
 sshconfig_install_creates_include_and_stanza sshconfig_remove_restores_original
 sshconfig_coexists_with_another_tool sshconfig_keeps_symlinked_config sshconfig_print_touches_nothing
