@@ -33,9 +33,9 @@ become hostnames and ssh `Host` patterns; one that does not is refused.
 `gc` or `status` that saw the session unused (each run dates them).
 `gc` offers only sessions min-vscode has connected to (it has keys for them
 under `STATE/sessions/NAME`); boxes it has never connected to (made by other
-tools or `min` alone) are not its to tidy. `open`, `destroy` without NAME, the
-`attach` picker and completions pass them over too; `attach NAME` still
-reaches one by name.
+tools or `min` alone) are not its to tidy. `open` without `-n`, `destroy`
+without NAME, the `attach` picker and completions pass them over too; only an
+explicit name (`attach NAME`, `destroy NAME`, `open -n NAME`) reaches one.
 
 just recipes: `check`, `install`, `ssh-config`, `vscode-config`, `skills`,
 `uninstall`, `ext-deps`, `vsix`.
