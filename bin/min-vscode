@@ -906,7 +906,10 @@ cmd_setup() {
     case ${1:-} in
         '') ;;
         --remove)
-            cmd_config --remove || :
+            # Settings first: while the editor's settings still name our hosts, the
+            # CLI and the ssh stanzas stay too
+            cmd_config --remove \
+                || die "setup --remove: $EDITOR_NAME's settings still hold $TOOL's entries (see above); fix the file, then run $TOOL setup --remove again (nothing else was removed)"
             cmd_ssh_config --remove
             for pair in "$ld:$lo" "$cl:$SELF"; do
                 f=${pair%%:*} t=${pair#*:}
