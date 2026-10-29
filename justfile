@@ -40,8 +40,8 @@ install:
 # Minimal's skills for VS Code's agents (Copilot, Claude Code), vendored from gominimal/minimal-skills (MIT) at a pinned commit
 # (version 0.7.0): the host ones in skills/ (setup installs them into ~/.copilot/skills and ~/.claude/skills on the Mac),
 # minimal-sandbox in loadouts/vscode/skills/ (the loadout copies it into every box).
-skills_commit := "0f4c117103df13c4ab8f3f3948827b4b4f63ee56"
-skills_sha256 := "5061e6b7b86a24d0c8971df23974d1982a92c285995147e5b32af2e880a0dc24"
+skills_commit := "d3ccc13ed4286978e2581a30eb3859dcbed59076"
+skills_sha256 := "bea8b245fc5e32de55ca4175dfc46c271c3a9ee8befa5d4c276336fc7a8aa993"
 
 # Re-fetch the vendored skills (after changing skills_commit and skills_sha256).
 skills:

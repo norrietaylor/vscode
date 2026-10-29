@@ -114,7 +114,10 @@ The file is `~/Library/Application Support/Code/User/settings.json`, or
 `min-vscode setup` copies Minimal's host skills (`minimal-setup`, `-config`, `-loadouts`, `-networking`, `-diag`) into
 `~/.copilot/skills` and `~/.claude/skills` on the Mac, marked
 `.min-vscode-copy`; a skill directory of yours with the same name is left
-alone, and `setup --remove` takes out only the marked copies.
+alone, and `setup --remove` takes out only the marked copies. min-zed
+installs the same skills into `~/.claude/skills`: a copy marked by another
+min tool is shared (each keeps its own mark, the last `setup` writes the
+files), and `--remove` leaves it while another mark is in it.
 
 In a box, the `vscode` loadout copies Minimal's `minimal-sandbox` skill into
 `~/.copilot/skills` (VS Code's Copilot) and `~/.claude/skills` (Claude Code

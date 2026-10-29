@@ -816,13 +816,19 @@ prepared_live() {
     return 0
 }
 
-# The merger next to this file (through ~/.local/bin symlinks).
-config_bin() {
+# real_self: this file itself, through ~/.local/bin symlinks ($SELF is the
+# path we were run by, which stanzas keep).
+real_self() {
     src=$SELF
     while [ -L "$src" ]; do
         l=$(readlink "$src"); case $l in /*) src=$l ;; *) src=$(dirname "$src")/$l ;; esac
     done
-    printf '%s/%s-config' "$(dirname "$src")" "$TOOL"
+    printf '%s/%s' "$(cd "$(dirname "$src")" && pwd -P)" "$(basename "$src")"
+}
+
+# The merger next to this file (through ~/.local/bin symlinks).
+config_bin() {
+    printf '%s-config' "$(real_self)"
 }
 
 # run_config ARGS: the settings merger for this tool.
@@ -880,13 +886,27 @@ setup_link() {
 
 # setup_copy_dir DEST SRC: DEST becomes a copy of SRC, marked as ours
 # (.TOOL-copy). min wants $LOADOUT_ROOT a real directory, so it cannot be a
-# link. A DEST without the mark is someone else's: left, returns 1.
+# link. A DEST with no min-<client> mark is someone else's: left, returns 1.
+# One with another min-<client>'s mark (a skill both install) is shared: the
+# copy keeps every mark, and the last setup's files win.
 setup_copy_dir() {
-    if [ -e "$1" ] && [ ! -f "$1/.$TOOL-copy" ]; then
+    if [ -e "$1" ] && ! copy_marks "$1" >/dev/null; then
         log "leaving $1: not made by $TOOL (move it aside, then run $TOOL setup again)"; return 1
     fi
-    rm -rf "$1.new" && cp -R "$2" "$1.new" && printf '%s\n' "$2" > "$1.new/.$TOOL-copy" \
-        && rm -rf "$1" && mv "$1.new" "$1" && log "copied $2 to $1"
+    rm -rf "$1.new" && cp -R "$2" "$1.new" || return 1
+    for m in $(copy_marks "$1"); do cp "$1/$m" "$1.new/$m" || return 1; done
+    printf '%s\n' "$2" > "$1.new/.$TOOL-copy" && rm -rf "$1" && mv "$1.new" "$1" && log "copied $2 to $1"
+}
+
+# copy_marks DIR: the min-<client> marks in DIR (.min-zed-copy, ...), one
+# per line; fails when there are none.
+copy_marks() {
+    found=1
+    for m in "$1"/.min-*-copy; do
+        [ -f "$m" ] || continue
+        printf '%s\n' "${m##*/}"; found=0
+    done
+    return "$found"
 }
 
 # setup [--remove]: the whole install from this copy (a checkout or the
@@ -899,7 +919,8 @@ setup_copy_dir() {
 # drops the links only when they point here.
 cmd_setup() {
     ld=${XDG_CONFIG_HOME:-$HOME/.config}/minimal/loadouts/$LOADOUT.toml
-    lo=$(cd "$(dirname "$SELF")/.." && pwd -P)/loadouts/$LOADOUT.toml
+    me=$(real_self)
+    lo=$(cd "$(dirname "$me")/.." && pwd -P)/loadouts/$LOADOUT.toml
     ldd=${ld%.toml} lod=${lo%.toml}
     sko=$(dirname "$lo")/../skills
     cl=$HOME/.local/bin/$TOOL
@@ -911,7 +932,7 @@ cmd_setup() {
             cmd_config --remove \
                 || die "setup --remove: $EDITOR_NAME's settings still hold $TOOL's entries (see above); fix the file, then run $TOOL setup --remove again (nothing else was removed)"
             cmd_ssh_config --remove
-            for pair in "$ld:$lo" "$cl:$SELF"; do
+            for pair in "$ld:$lo" "$cl:$me"; do
                 f=${pair%%:*} t=${pair#*:}
                 if [ -L "$f" ] && [ "$(readlink "$f")" = "$t" ]; then rm -f "$f"; log "removed $f"
                 elif [ -e "$f" ] || [ -L "$f" ]; then log "leaving $f: it is not this copy's link"; fi
@@ -920,17 +941,23 @@ cmd_setup() {
             for skd in "$HOME/.copilot/skills" "$HOME/.claude/skills"; do
                 for d in "$skd"/*/; do
                     d=${d%/}
-                    if [ -f "$d/.$TOOL-copy" ]; then rm -rf "$d"; log "removed $d"; fi
+                    [ -f "$d/.$TOOL-copy" ] || continue
+                    rm -f "$d/.$TOOL-copy"
+                    if others=$(copy_marks "$d"); then
+                        log "left $d: also installed by $(printf '%s\n' "$others" | sed 's/^\.//; s/-copy$//' | paste -sd ' ' -)"
+                    else rm -rf "$d"; log "removed $d"; fi
                 done
+                # the skills directory setup made, once nothing is left in it
+                rmdir "$skd" 2>/dev/null && log "removed $skd"
             done
             log "left $STATE in place: it holds the session keys and backups"
             return 0 ;;
         *) die "setup: unknown option $1" ;;
     esac
-    [ -f "$lo" ] || die "no $LOADOUT loadout next to $SELF ($lo)"
-    [ -x "$SELF" ] || chmod +x "$SELF"
+    [ -f "$lo" ] || die "no $LOADOUT loadout next to $me ($lo)"
+    [ -x "$me" ] || chmod +x "$me"
     rc=0
-    setup_link "$cl" "$SELF" || rc=1
+    setup_link "$cl" "$me" || rc=1
     setup_link "$ld" "$lo" || rc=1
     [ ! -d "$lod" ] || setup_copy_dir "$ldd" "$lod" || rc=1
     if [ -d "$sko" ]; then
