@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stub for the VS Code CLI: logs argv; --version and --list-extensions from
+# STUB_CODE_COMMIT and $FIXTURES/no-remote-ssh.
+echo "code $*" >> "$STUB_LOG"
+case ${1:-} in
+    --version) printf '1.105.0\n%s\narm64\n' "${STUB_CODE_COMMIT-0123456789abcdef0123456789abcdef01234567}" ;;
+    --list-extensions) [ -f "$FIXTURES/no-remote-ssh" ] || echo ms-vscode-remote.remote-ssh; echo ms-python.python ;;
+esac
+exit 0

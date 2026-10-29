@@ -1,0 +1,1676 @@
+#!/bin/sh
+# Test suite for bin/min-vscode and bin/min-vscode-config. Run: sh tests/run.sh
+# Every case runs in a subshell with stubbed min/code/ssh/ssh-keygen/ps
+# on a private PATH, a fresh temp state dir and a temp HOME.
+# Nothing real is touched.
+#
+# LONG_PREFIX=1 runs the whole suite against a copy of bin/ whose HOST_PREFIX
+# is long, so no `min-vscode.` offset can hide in the code.
+set -u
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+STUBS=$ROOT/tests/stubs
+TOOL=min-vscode
+HP=min-vscode.
+BINDIR=$ROOT/bin
+if [ "${LONG_PREFIX:-}" = 1 ]; then
+    HP=min-vscode-a-much-longer-prefix-for-tests.
+    LR=$(mktemp -d) && LR=$(cd "$LR" && pwd -P)
+    trap 'rm -rf "$LR"' EXIT
+    LP=$LR/bin
+    mkdir "$LP" && cp -R "$ROOT/loadouts" "$ROOT/skills" "$LR/"   # setup takes these from beside bin/
+    sed "s/^HOST_PREFIX=min-vscode\\.\$/HOST_PREFIX=$HP/" "$ROOT/bin/min-vscode" > "$LP/min-vscode"
+    sed "s/^HOST_PREFIX = \"min-vscode\\.\"\$/HOST_PREFIX = \"$HP\"/" "$ROOT/bin/min-vscode-config" > "$LP/min-vscode-config"
+    grep -q "^HOST_PREFIX=$HP\$" "$LP/min-vscode" || { echo "LONG_PREFIX: could not rewrite HOST_PREFIX"; exit 1; }
+    grep -q "^HOST_PREFIX = \"$HP\"\$" "$LP/min-vscode-config" || { echo "LONG_PREFIX: could not rewrite the merger"; exit 1; }
+    chmod +x "$LP/min-vscode" "$LP/min-vscode-config"   # ssh stanzas exec the CLI itself
+    BINDIR=$LP
+fi
+BIN=$BINDIR/min-vscode
+CFG=$BINDIR/min-vscode-config
+SELF=$(cd "$BINDIR" && pwd -P)/min-vscode   # what the CLI bakes into ssh stanzas
+
+# ---- harness -----------------------------------------------------------------
+
+setup() {
+    T=$(mktemp -d) || exit 1
+    T=$(cd "$T" && pwd -P)
+    trap 'rm -rf "$T"' EXIT
+    HOME=$T/home STATE=$T/state FIXTURES=$T/fixtures STUB_LOG=$T/stub.log
+    P=$T/proj          # project dir for open/new
+    AP=$T/alpha-proj   # project dir of the pre-existing session "alpha"
+    SETTINGS=$T/settings.json
+    mkdir -p "$HOME" "$STATE" "$FIXTURES" "$T/bin" "$P" "$AP"
+    : > "$STUB_LOG"
+    for s in min ssh ssh-keygen ps; do ln -s "$STUBS/$s" "$T/bin/$s"; done
+    # Safety: VS Code is reached only as the absolute stub path below; a bare
+    # open/osascript/zed/code/cursor/windsurf lands on the tripwire (logged
+    # to $TRIPWIRE_LOG), which fails the case.
+    for s in open osascript zed code cursor windsurf; do ln -s "$STUBS/tripwire" "$T/bin/$s"; done
+    mkdir -p "$T/stub-bin"
+    ln -s "$STUBS/code" "$T/stub-bin/code"
+    TRIPWIRE_LOG=$T/tripwire
+    PATH=$T/bin:/usr/bin:/bin
+    MIN_BIN=$T/bin/min SSH_KEYGEN_BIN=$T/bin/ssh-keygen
+    MIN_VSCODE_STATE_DIR=$STATE MIN_VSCODE_EDITOR_BIN=$T/stub-bin/code MIN_VSCODE_SETTINGS=$SETTINGS
+    MIN_NO_PATH_EXTEND=1
+    unset XDG_CONFIG_HOME XDG_STATE_HOME ZDOTDIR VISUAL EDITOR
+    export HOME PATH STUB_LOG FIXTURES MIN_BIN SSH_KEYGEN_BIN TRIPWIRE_LOG MIN_NO_PATH_EXTEND \
+        MIN_VSCODE_STATE_DIR MIN_VSCODE_EDITOR_BIN MIN_VSCODE_SETTINGS
+    default_fixtures
+}
+
+default_fixtures() {
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active","git":{"branch":"main"},"attrs":null}]}
+JSON
+    printf 'user=box\nhome=/home\nsshd=/usr/sbin/sshd\nhostkey=ssh-ed25519 AAAAFAKE\n' > "$FIXTURES/facts.txt"
+    : > "$FIXTURES/ps.txt"
+}
+
+# sessions_after NAME DIR: activate will add session NAME for DIR (alpha stays).
+sessions_after() {
+    cat > "$FIXTURES/sessions.after.json" <<JSON
+{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active","git":{"branch":"main"},"attrs":null},
+ {"id":"ID-N","name":"$1","project_path":"$2","status":"active","git":{"branch":"main"},"attrs":null}]}
+JSON
+}
+
+# run ARGS...: run the CLI, capturing RC, $T/out, $T/err.
+run() {
+    sh "$BIN" "$@" > "$T/out" 2> "$T/err" < /dev/null
+    RC=$?
+}
+# run_stdin INPUT ARGS...
+run_stdin() {
+    input=$1; shift
+    printf '%s' "$input" | sh "$BIN" "$@" > "$T/out" 2> "$T/err"
+    RC=$?
+}
+# run_cfg ARGS...: the merger against $SETTINGS with the test state dir.
+run_cfg() {
+    python3 "$CFG" --settings "$SETTINGS" --state "$STATE" "$@" > "$T/out" 2> "$T/err" < /dev/null
+    RC=$?
+}
+# settings_get JQ: the settings parsed with the merger's own JSONC reader.
+settings_get() {
+    python3 - "$SETTINGS" "$CFG" <<'PY' | jq -c "$1"
+import sys, json
+src = open(sys.argv[2]).read().replace('if __name__ == "__main__":\n    main()', '')
+m = {}
+exec(compile(src, 'min-vscode-config', 'exec'), m)
+print(json.dumps(m['load_jsonc'](open(sys.argv[1], encoding='utf-8-sig').read())[0]))
+PY
+}
+
+reset_log() { : > "$STUB_LOG"; }
+skip() { printf '# skip: %s\n' "$*" >&2; : > "$T/skip"; }
+ssh_g() { /usr/bin/ssh -G -F "$HOME/.ssh/config" "$1" 2>/dev/null; }
+
+# ---- assertions (record failure, keep going) ---------------------------------
+
+fail() { printf '# %s\n' "$*" >&2; : > "$T/fail"; }
+assert_log_contains() {
+    grep -qF -- "$1" "$STUB_LOG" || { fail "log lacks: $1"; sed 's/^/#   log: /' "$STUB_LOG" >&2; }
+}
+assert_log_not_contains() { ! grep -qF -- "$1" "$STUB_LOG" || fail "log unexpectedly has: $1"; }
+assert_log_count() { # N PATTERN
+    c=$(grep -cF -- "$2" "$STUB_LOG")
+    [ "$c" = "$1" ] || fail "expected $1 log line(s) with '$2', got $c"
+}
+assert_log_before() { # A B: first line with A precedes first line with B
+    a=$(grep -nF -- "$1" "$STUB_LOG" | head -1 | cut -d: -f1)
+    b=$(grep -nF -- "$2" "$STUB_LOG" | head -1 | cut -d: -f1)
+    { [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; } || fail "expected '$1' before '$2' in log"
+}
+assert_file() { # PATH [CONTENT]
+    [ -f "$1" ] || { fail "missing file: $1"; return 0; }
+    [ $# -lt 2 ] || [ "$(cat "$1")" = "$2" ] || fail "content of $1 is '$(cat "$1")', expected '$2'"
+}
+assert_no_file() { [ ! -e "$1" ] || fail "should not exist: $1"; }
+assert_file_contains() { grep -qF -- "$2" "$1" || { fail "$1 lacks: $2"; sed 's/^/#   file: /' "$1" >&2; }; }
+assert_file_not_contains() { ! grep -qF -- "$2" "$1" || fail "$1 unexpectedly has: $2"; }
+assert_mode() { # PATH MODE (octal)
+    # GNU first: GNU `stat -f` is file-system status and succeeds with the wrong output
+    m=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null)
+    [ "$m" = "$2" ] || fail "mode of $1 is $m, expected $2"
+}
+assert_line_in() { # TEXT LINE
+    printf '%s\n' "$1" | grep -qxF -- "$2" || { fail "no line '$2' in:"; printf '%s\n' "$1" | sed 's/^/#   /' >&2; }
+}
+assert_rc() { [ "$RC" = "$1" ] || fail "exit status $RC, expected $1"; }
+assert_rc_nonzero() { [ "$RC" != 0 ] || fail "expected non-zero exit status"; }
+assert_err_contains() { grep -qF -- "$1" "$T/err" || { fail "stderr lacks: $1"; sed 's/^/#   err: /' "$T/err" >&2; }; }
+assert_out_contains() { grep -qF -- "$1" "$T/out" || { fail "stdout lacks: $1"; sed 's/^/#   out: /' "$T/out" >&2; }; }
+assert_out_eq() { [ "$(cat "$T/out")" = "$1" ] || fail "stdout is '$(cat "$T/out")', expected '$1'"; }
+
+# ---- ssh-config helpers --------------------------------------------------------
+
+MARK1="# $TOOL ssh-config (remove with: $TOOL ssh-config --remove)"
+MARK2="Include ~/.ssh/$TOOL.conf"
+CONF=.ssh/$TOOL.conf     # under $HOME
+# The shared record of what the first min-<client> ssh-config created.
+CREATED_REL=.local/state/min-clients/ssh-config-created
+
+# alpha_facts: a plain `ssh` populates sessions/alpha/* for the stanza.
+alpha_facts() { run ssh alpha -- true; assert_rc 0; }
+# installed: ssh-config in place, with alpha's facts.
+installed() { alpha_facts; run ssh-config; assert_rc 0; }
+
+stanza_expected() {
+    printf '# %s\nHost %s%s\n    User box\n' "$1" "$HP" "$1"
+    printf '    IdentitiesOnly yes\n    AddKeysToAgent no\n    UserKnownHostsFile "%s/sessions/%s/known_hosts"\n' "$STATE" "$1"
+    printf '    StrictHostKeyChecking yes\n    ForwardAgent no\n    ForwardX11 no\n    ForwardX11Trusted no\n'
+    printf '    IdentityFile "%s/sessions/%s/id_ed25519"\n' "$STATE" "$1"
+    printf '    ProxyCommand env MIN_BIN=%s MIN_VSCODE_STATE_DIR=%s %s _proxy %s\n' "$T/bin/min" "$STATE" "$SELF" "$1"
+}
+conf_expected() {
+    printf '# managed by %s ssh-config; do not edit\n' "$TOOL"
+    for n in "$@"; do printf '\n'; stanza_expected "$n"; done
+    printf '\nHost %s* !%s*.*\n    ProxyCommand env MIN_VSCODE_STATE_DIR=%s %s _proxy --missing\n' "$HP" "$HP" "$STATE" "$SELF"
+}
+
+SSHD_ARGV="/usr/sbin/sshd -i -e -f /dev/null -h /home/.ssh/$TOOL/host_ed25519 -o LogLevel=ERROR -o PidFile=none -o StrictModes=no -o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o AuthorizedKeysFile /home/.ssh/$TOOL/authorized_keys -o PermitUserEnvironment=yes -o AllowTcpForwarding=yes -o GatewayPorts=no -o AllowAgentForwarding=no -o X11Forwarding=no -o PrintMotd=no -o PrintLastLog=no -o UseDNS=no -o Subsystem sftp internal-sftp"
+MISSING_MSG="$TOOL: no $TOOL ssh stanza for this ${HP}* host; run: $TOOL status, then $TOOL attach NAME (or $TOOL ssh-config)"
+
+# ---- open / new / attach -------------------------------------------------------
+
+case_open_activates_and_launches_editor() {
+    installed
+    sessions_after proj-amber "$P"
+    reset_log
+    run open "$P"
+    assert_rc 0
+    assert_out_eq "${HP}proj-amber"
+    d=$STATE/sessions/proj-amber
+    assert_log_contains "min session activate --no-prompt --loadout vscode $P"
+    pub=$(cat "$d/id_ed25519.pub")
+    assert_log_contains "min session exec proj-amber sh -c <script> $TOOL $pub"
+    assert_log_contains "code --remote ssh-remote+${HP}proj-amber /workbench"
+    assert_log_before "min session exec proj-amber sh -c" "code --remote"
+    assert_file "$d/known_hosts" "${HP}proj-amber ssh-ed25519 AAAAFAKE"
+    assert_file "$HOME/$CONF" "$(conf_expected alpha proj-amber)"
+    assert_file "$STATE/created/proj-amber"
+    [ "$(find "$d" -maxdepth 0 -perm 700)" = "$d" ] || fail "key dir mode is not 700"
+}
+
+case_open_reuses_live_session_for_path() {
+    installed
+    reset_log
+    run open "$AP"
+    assert_rc 0
+    assert_out_eq "${HP}alpha"
+    assert_log_not_contains "session activate"
+    assert_log_contains "code --remote ssh-remote+${HP}alpha /workbench"
+}
+
+case_open_needs_ssh_config() {
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_rc 1
+    assert_err_contains "run $TOOL ssh-config first"
+    assert_log_not_contains "session activate"
+    assert_log_not_contains "code "
+}
+
+case_open_rejects_non_directory_and_bad_name() {
+    installed
+    run open /nonexistent
+    assert_rc_nonzero
+    assert_err_contains "not a directory"
+    for n in 'a b' 'x*' 'Upper' '-dash' 'q?' 'h#' 'p%' 'a.b'; do
+        run open "$P" -n "$n"
+        assert_rc 1
+        assert_err_contains "$TOOL: session name must be lowercase letters, digits and dashes: $n"
+    done
+    assert_log_not_contains "session activate"
+}
+
+case_open_name_for_other_dir() {
+    installed
+    run open "$P" -n alpha
+    assert_rc 1
+    assert_err_contains "session alpha is for $AP, not $P"
+}
+
+case_new_always_activates() {
+    installed
+    sessions_after alpha-proj-amber "$AP"
+    reset_log
+    run new "$AP"
+    assert_rc 0
+    assert_out_eq "${HP}alpha-proj-amber"
+    assert_log_contains "min session activate --no-prompt --loadout vscode $AP"
+    run new "$AP" -n alpha
+    assert_rc 1
+    assert_err_contains "session alpha already exists"
+}
+
+case_attach_launches_existing() {
+    installed
+    reset_log
+    run attach alpha
+    assert_rc 0
+    assert_log_contains "min session exec alpha sh -c <script>"
+    assert_log_contains "code --remote ssh-remote+${HP}alpha /workbench"
+    assert_log_not_contains "session activate"
+    run attach nope
+    assert_rc 1
+    assert_err_contains "no session named nope"
+}
+
+case_attach_picker_rejects_zero() {
+    installed
+    run attach
+    assert_rc 1
+    assert_err_contains "attach: NAME required when stdin is not a terminal"
+}
+
+case_open_without_editor_fails_after_prepare() {
+    installed
+    MIN_VSCODE_EDITOR_BIN=$T/no-code run attach alpha
+    assert_rc 1
+    assert_err_contains "$T/no-code not found"
+}
+
+# No code on PATH and no MIN_VSCODE_EDITOR_BIN: the CLI inside the app.
+case_open_editor_falls_back_to_app() {
+    installed
+    rm "$T/bin/code"
+    mkdir -p "$T/App.app/Contents/Resources/app/bin"
+    ln -s "$STUBS/code" "$T/App.app/Contents/Resources/app/bin/code"
+    unset MIN_VSCODE_EDITOR_BIN
+    MIN_VSCODE_EDITOR_APP=$T/App.app run attach alpha
+    assert_rc 0
+    assert_log_contains "code --remote ssh-remote+${HP}alpha /workbench"
+    MIN_VSCODE_EDITOR_APP=$T/no-app run attach alpha
+    assert_rc 1
+    assert_err_contains "code not found"
+}
+
+# ---- names ---------------------------------------------------------------------
+
+# min names a new session; we take the one new session for the path.
+case_names_from_min() {
+    installed
+    sessions_after proj-1a2b "$P"
+    reset_log
+    run new "$P"
+    assert_rc 0
+    assert_out_eq "${HP}proj-1a2b"
+    assert_log_contains "min session activate --no-prompt --loadout vscode $P"
+    assert_log_not_contains " -n proj"
+    assert_file "$STATE/created/proj-1a2b"
+    # -n still names it
+    sessions_after mine "$P"
+    reset_log
+    run new "$P" -n mine
+    assert_rc 0
+    assert_log_contains "min session activate --no-prompt --loadout vscode -n mine $P"
+    # no new session for the path, or a name that is no hostname: refused
+    cp "$FIXTURES/sessions.json" "$FIXTURES/sessions.after.json"
+    jq '.sessions |= map(select(.name != "mine" and .name != "proj-1a2b"))' "$FIXTURES/sessions.after.json" > "$T/s.json" \
+        && cp "$T/s.json" "$FIXTURES/sessions.after.json" && cp "$T/s.json" "$FIXTURES/sessions.json"
+    run new "$P"
+    assert_rc 1
+    assert_err_contains "activate made no session for $P"
+    sessions_after 'Bad_Name' "$P"
+    run new "$P"
+    assert_rc 1
+    assert_err_contains "not a hostname; pass -n NAME"
+    assert_log_not_contains "code --remote ssh-remote+${HP}Bad"
+}
+
+# ---- destroy / gc --------------------------------------------------------------
+
+case_destroy_asks_and_cleans_up() {
+    installed
+    run_stdin 'n
+' destroy alpha
+    assert_rc 0
+    assert_err_contains "Destroy Minimal session alpha ($AP)? [y/N]"
+    assert_log_not_contains "session destroy"
+    assert_file "$STATE/kept/alpha"
+    run destroy alpha              # no answer means No
+    assert_log_not_contains "session destroy"
+    run_stdin 'y
+' destroy alpha
+    assert_rc 0
+    assert_log_contains "min session destroy alpha"
+    assert_no_file "$STATE/sessions/alpha"
+    assert_no_file "$STATE/kept/alpha"
+    assert_file "$HOME/$CONF" "$(conf_expected)"
+}
+
+case_destroy_by_cwd() {
+    alpha_facts
+    (cd "$AP" && sh "$BIN" destroy -y > "$T/out" 2> "$T/err" < /dev/null); RC=$?
+    assert_rc 0
+    assert_log_contains "min session destroy alpha"
+    (cd "$P" && sh "$BIN" destroy -y > "$T/out" 2> "$T/err" < /dev/null); RC=$?
+    assert_rc 1
+    assert_err_contains "no session for $P; pass NAME"
+}
+
+# own NAME...: sessions this tool has prepared (a key dir), the only ones gc offers.
+own() { for o in "$@"; do mkdir -p "$STATE/sessions/$o"; done; }
+
+orphan_sessions() {
+    own alpha beta gamma stopped
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"ID-B","name":"beta","project_path":"$T/beta-proj","status":"active"},
+ {"id":"ID-G","name":"gamma","project_path":"$T/gamma-proj","status":"active"},
+ {"id":"ID-S","name":"stopped","project_path":"$T/s","status":"stopped"}]}
+JSON
+}
+age() { mkdir -p "$STATE/orphan"; printf '%s' "$(($(date +%s) - $2))" > "$STATE/orphan/$1"; }
+
+# ps_line PID PPID ARGS
+ps_line() { printf '%s %s %s\n' "$@" >> "$FIXTURES/ps.txt"; }
+# exec_line PID PPID NAME: the process a connection to NAME runs on the host.
+exec_line() { ps_line "$1" "$2" "/opt/homebrew/bin/min session exec $3 /usr/sbin/sshd -i -e -f /dev/null -h /home/.ssh/$TOOL/host_ed25519"; }
+
+# In use: a `min session exec NAME .../sshd` on the host, whatever ssh client
+# or Host alias started it; mentions of the name elsewhere do not count.
+case_in_use_reads_ps() {
+    orphan_sessions
+    ps_line 100 1 "ssh -T other-alias.alpha"
+    exec_line 101 100 alpha
+    ps_line 300 1 "/bin/zsh -c min session exec gamma true"
+    ps_line 301 1 "/usr/bin/tail -f /tmp/min session exec gamma sshd.log"
+    ps_line 302 1 "/opt/homebrew/bin/min session exec gamma claude"
+    ps_line 303 1 "/opt/homebrew/bin/min session exec gamma sh -c set -eu umask 077 $TOOL ssh-ed25519 AAAA"
+    ps_line 304 1 "/opt/homebrew/bin/min session exec gamma-x /usr/sbin/sshd -i -e"
+    ps_line 305 1 "/usr/bin/ssh -o ConnectTimeout=5 build.example tail -f ${HP}gamma"
+    run gc --dry-run
+    assert_rc 0
+    ! grep -q '^alpha ' "$T/out" || fail "alpha is in use through another alias's connection"
+    grep -q '^beta ' "$T/out" || fail "beta is not in use"
+    grep -q '^gamma ' "$T/out" || fail "gamma is not in use"
+    ! grep -q '^stopped ' "$T/out" || fail "only active sessions are offered"
+}
+
+case_gc_lists_oldest_first_and_asks() {
+    orphan_sessions
+    age beta 7200
+    age gamma 200000
+    run gc --dry-run
+    assert_rc 0
+    [ "$(sed -n 1p "$T/out" | tr -s ' ')" = "NAME PROJECT IDLE" ] || fail "header: $(sed -n 1p "$T/out")"
+    [ "$(sed -n 2p "$T/out" | tr -s ' ')" = "gamma $T/gamma-proj 2d" ] || fail "oldest first: $(sed -n 2p "$T/out")"
+    [ "$(sed -n 3p "$T/out" | tr -s ' ')" = "beta $T/beta-proj 2h" ] || fail "row: $(sed -n 3p "$T/out")"
+    run gc --dry-run --older-than 86400
+    ! grep -q beta "$T/out" || fail "--older-than should drop beta"
+    ! grep -q alpha "$T/out" || fail "undated alpha has unknown age: left out with a threshold"
+    assert_log_not_contains "session destroy"
+    run_stdin 'y
+n
+q
+' gc
+    assert_rc 0
+    assert_log_contains "min session destroy gamma"
+    assert_log_not_contains "min session destroy beta"
+    assert_log_not_contains "min session destroy alpha"
+    assert_file "$STATE/kept/beta"
+    assert_err_contains "[y/N/q]"
+    run gc --older-than x
+    assert_rc 1
+}
+
+# Another tool's box (no key dir here) is never listed or asked about.
+case_gc_offers_only_own_sessions() {
+    orphan_sessions
+    rm -rf "$STATE/sessions/gamma"
+    age beta 300
+    age gamma 200000
+    run gc --dry-run
+    assert_rc 0
+    grep -q '^beta ' "$T/out" || fail "own idle beta is offered: $(cat "$T/out")"
+    ! grep -q '^gamma ' "$T/out" || fail "gamma is another tool's: $(cat "$T/out")"
+    run_stdin 'y
+y
+y
+' gc
+    assert_rc 0
+    assert_log_contains "min session destroy beta"
+    assert_log_not_contains "min session destroy gamma"
+    ! grep -q gamma "$T/out" "$T/err" || fail "gamma mentioned by gc"
+}
+
+# gc and status date idle sessions (there is no background watch).
+case_status_tracks_orphans() {
+    orphan_sessions
+    age gamma 500
+    g=$(cat "$STATE/orphan/gamma")
+    exec_line 101 1 alpha
+    run status
+    assert_rc 0
+    assert_file "$STATE/orphan/beta"
+    assert_file "$STATE/orphan/gamma" "$g"
+    [ $(($(date +%s) - $(cat "$STATE/orphan/alpha"))) -lt 60 ] || fail "alpha in use: age restarts"
+    assert_no_file "$STATE/orphan/stopped"
+    jq '.sessions |= map(select(.name != "beta"))' "$FIXTURES/sessions.json" > "$T/s.json" && cp "$T/s.json" "$FIXTURES/sessions.json"
+    run gc --dry-run
+    assert_no_file "$STATE/orphan/beta"
+}
+
+case_status_table() {
+    orphan_sessions
+    exec_line 101 1 alpha
+    age beta 7200
+    run status
+    assert_rc 0
+    [ "$(sed -n 1p "$T/out" | tr -s ' ')" = "SESSION STATUS PROJECT IN USE IDLE" ] || fail "header: $(sed -n 1p "$T/out")"
+    [ "$(grep '^alpha' "$T/out" | tr -s ' ')" = "alpha active $AP yes -" ] || fail "alpha: $(grep '^alpha' "$T/out")"
+    [ "$(grep '^beta' "$T/out" | tr -s ' ')" = "beta active $T/beta-proj no 2h" ] || fail "beta: $(grep '^beta' "$T/out")"
+}
+
+# ---- settings wiring -----------------------------------------------------------
+
+case_settings_untouched_before_opt_in() {
+    installed
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_rc 0
+    assert_no_file "$SETTINGS"
+    run destroy -y alpha
+    assert_no_file "$SETTINGS"
+}
+
+case_settings_follow_sessions() {
+    installed
+    printf '// mine\n{\n  "editor.fontSize": 13, // keep\n  "remote.SSH.remotePlatform": {\n    "other": "linux"\n  }\n}\n' > "$SETTINGS"
+    cp "$SETTINGS" "$T/orig.json"
+    run config
+    assert_rc 0
+    assert_file "$STATE/settings-installed"
+    [ "$(settings_get '."remote.SSH.remotePlatform"')" = "{\"other\":\"linux\",\"${HP}alpha\":\"linux\"}" ] \
+        || fail "remotePlatform: $(settings_get '."remote.SSH.remotePlatform"')"
+    [ "$(settings_get '."remote.SSH.useLocalServer"')" = false ] || fail "useLocalServer not set"
+    assert_file_contains "$SETTINGS" "\"editor.fontSize\": 13, // keep"
+    # the user's own remotePlatform is edited in place; only useLocalServer is in the block
+    assert_file_contains "$SETTINGS" "// $TOOL:begin"
+    [ "$(sed -n "/$TOOL:begin/,/$TOOL:end/p" "$SETTINGS" | grep -c remotePlatform)" = 0 ] || fail "remotePlatform in the block: $(cat "$SETTINGS")"
+    sessions_after proj-amber "$P"
+    run open "$P"
+    [ "$(settings_get '."remote.SSH.remotePlatform" | keys')" = "[\"${HP}alpha\",\"${HP}proj-amber\",\"other\"]" ] \
+        || fail "after open: $(settings_get '."remote.SSH.remotePlatform"')"
+    run destroy -y alpha
+    [ "$(settings_get '."remote.SSH.remotePlatform" | keys')" = "[\"${HP}proj-amber\",\"other\"]" ] \
+        || fail "after destroy: $(settings_get '."remote.SSH.remotePlatform"')"
+    run config --remove
+    assert_rc 0
+    cmp -s "$T/orig.json" "$SETTINGS" || { fail "settings not restored byte for byte"; sed 's/^/#   /' "$SETTINGS" >&2; }
+    assert_no_file "$STATE/settings-installed"
+    [ -n "$(find "$STATE/backups" -name 'settings.json.*')" ] || fail "no settings backup under the state dir"
+}
+
+case_settings_sync_skipped_when_min_ls_fails() {
+    installed
+    run config
+    cp "$SETTINGS" "$T/before.json"
+    # `ssh` lists sessions three times: sess_exists, the stanza refresh, the
+    # settings refresh. Only the last fails: a partial list must not prune.
+    cat > "$T/bin/min-flaky" <<EOF
+#!/bin/sh
+if [ "\$1 \$2" = "ls --json" ]; then
+    n=\$(cat "$T/ls.count" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$T/ls.count"
+    [ "\$n" -lt 3 ] || exit 1
+fi
+exec "$T/bin/min" "\$@"
+EOF
+    chmod +x "$T/bin/min-flaky"
+    MIN_BIN=$T/bin/min-flaky run ssh alpha -- true
+    assert_rc 0
+    [ "$(cat "$T/ls.count")" = 3 ] || fail "expected three min ls calls, got $(cat "$T/ls.count")"
+    assert_err_contains "min ls failed; VS Code settings not refreshed"
+    cmp -s "$T/before.json" "$SETTINGS" || fail "settings changed although min ls failed"
+}
+
+# min ls failing: config keeps our entries (no pruning on a partial list),
+# and doctor says it could not check them.
+case_config_and_doctor_keep_entries_when_min_ls_fails() {
+    installed
+    run config
+    assert_rc 0
+    cp "$SETTINGS" "$T/before.json"
+    # shellcheck disable=SC2016  # the $1/$2/$@ are the wrapper's
+    printf '#!/bin/sh\n[ "$1 $2" != "ls --json" ] || exit 1\nexec "%s" "$@"\n' "$T/bin/min" > "$T/bin/min-nols"
+    chmod +x "$T/bin/min-nols"
+    MIN_BIN=$T/bin/min-nols run config
+    assert_rc 0
+    assert_err_contains "min ls failed; existing ${HP}* entries left as they are"
+    [ "$(settings_get '."remote.SSH.remotePlatform"')" = "{\"${HP}alpha\":\"linux\"}" ] || fail "entries pruned: $(cat "$SETTINGS")"
+    MIN_BIN=$T/bin/min-nols run config --print
+    assert_out_contains "\"${HP}alpha\": \"linux\""
+    MIN_BIN=$T/bin/min-nols run doctor
+    grep -Eq "^warn +settings +min ls failed; ${HP}\\* entries not checked" "$T/out" || fail "doctor row: $(grep settings "$T/out")"
+}
+
+case_config_print_and_bad_option() {
+    installed
+    run config --print
+    assert_rc 0
+    assert_out_contains "\"${HP}alpha\": \"linux\""
+    assert_no_file "$SETTINGS"
+    assert_no_file "$STATE/settings-installed"
+    run config --bogus
+    assert_rc 1
+    assert_err_contains "config: unknown option --bogus"
+}
+
+case_merger_fresh_file_and_noop() {
+    run_cfg --install --sync a b
+    assert_rc 0
+    [ "$(settings_get '."remote.SSH.remotePlatform"')" = "{\"${HP}a\":\"linux\",\"${HP}b\":\"linux\"}" ] || fail "fresh: $(cat "$SETTINGS")"
+    assert_mode "$SETTINGS" 600
+    cp "$SETTINGS" "$T/one.json"
+    touch -t 200001010000 "$SETTINGS"; : > "$T/stamp"
+    run_cfg --sync b a
+    assert_rc 0
+    assert_out_contains "nothing to do"
+    [ -z "$(find "$SETTINGS" -newer "$T/stamp")" ] || fail "unchanged settings were rewritten"
+    run_cfg --sync 'Bad Name' a b
+    cmp -s "$T/one.json" "$SETTINGS" || fail "an invalid name reached the settings"
+    run_cfg --remove
+    assert_no_file "$SETTINGS"
+    assert_out_contains "created and is empty again"
+}
+
+case_merger_keeps_users_local_server() {
+    printf '{\n  "remote.SSH.useLocalServer": true\n}\n' > "$SETTINGS"
+    run_cfg --install --sync a
+    assert_rc 0
+    [ "$(settings_get '.')" = "{\"remote.SSH.remotePlatform\":{\"${HP}a\":\"linux\"},\"remote.SSH.useLocalServer\":true}" ] \
+        || fail "a user's useLocalServer was overridden: $(cat "$SETTINGS")"
+    run_cfg --doctor a
+    assert_out_contains "remote.SSH.useLocalServer is true (yours; left alone)"
+    # set to true by the user inside our block: theirs, kept by sync and remove
+    printf '{\n  "a": 1\n}\n' > "$SETTINGS"
+    run_cfg --sync a
+    [ "$(settings_get '."remote.SSH.useLocalServer"')" = false ] || fail "useLocalServer not set: $(cat "$SETTINGS")"
+    sed 's/"remote.SSH.useLocalServer": false/"remote.SSH.useLocalServer": true/' "$SETTINGS" > "$T/s" && cp "$T/s" "$SETTINGS"
+    run_cfg --sync a b
+    assert_rc 0
+    [ "$(settings_get '."remote.SSH.useLocalServer"')" = true ] || fail "an edit inside the block was overwritten: $(cat "$SETTINGS")"
+    [ "$(sed -n "/$TOOL:begin/,/$TOOL:end/p" "$SETTINGS" | grep -c useLocalServer)" = 0 ] || fail "the user's value is still in the block: $(cat "$SETTINGS")"
+    run_cfg --sync a
+    assert_rc 0
+    [ "$(settings_get '."remote.SSH.useLocalServer"')" = true ] || fail "second sync: $(cat "$SETTINGS")"
+    run_cfg --remove
+    [ "$(settings_get '.')" = '{"remote.SSH.useLocalServer":true,"a":1}' ] || fail "remove dropped the user's value: $(cat "$SETTINGS")"
+}
+
+# --remove gives back the bytes it found, whatever followed the opening brace,
+# with CRLF line endings, and with a BOM. Only a remotePlatform object of the
+# user's that we had to rewrite comes back re-indented (documented).
+case_merger_remove_restores_framing() {
+    for probe in '{}' '{"a": 1}' '{ "a": 1,\n "b": 2 }' '{\n  "a": 1\n}\n' '{\r\n  "a": 1, // c\r\n}\r\n' '\357\273\277{"a": 1}\n'; do
+        rm -f "$SETTINGS" "$STATE/settings-installed" "$STATE/settings-created"
+        # shellcheck disable=SC2059  # the probe is a printf format on purpose
+        printf "$probe" > "$SETTINGS"; cp "$SETTINGS" "$T/orig.json"
+        run_cfg --install --sync a b
+        assert_rc 0
+        [ "$(settings_get '."remote.SSH.remotePlatform" | keys | length')" = 2 ] || fail "$probe: not installed: $(cat "$SETTINGS")"
+        case $probe in *'\r\n'*) ! LC_ALL=C grep -q "$(printf '[^\r]$')" "$SETTINGS" || fail "a bare LF went into a CRLF file" ;; esac
+        case $probe in '\357'*) [ "$(head -c 3 "$SETTINGS" | od -An -tx1 | tr -d ' ')" = efbbbf ] || fail "BOM lost" ;; esac
+        run_cfg --sync a
+        run_cfg --remove
+        assert_rc 0
+        cmp -s "$T/orig.json" "$SETTINGS" || { fail "$probe: not restored byte for byte"; od -c "$SETTINGS" | head -4 | sed 's/^/#   /' >&2; }
+    done
+}
+
+case_merger_symlink_written_through() {
+    mkdir -p "$T/dotfiles"
+    printf '{\n  "a": 1\n}\n' > "$T/dotfiles/settings.json"
+    ln -s "$T/dotfiles/settings.json" "$SETTINGS"
+    run_cfg --install --sync x
+    assert_rc 0
+    [ -L "$SETTINGS" ] || fail "settings.json is no longer a symlink"
+    assert_file_contains "$T/dotfiles/settings.json" "\"${HP}x\": \"linux\""
+}
+
+case_merger_preserves_foreign_entries_vscode_put_in_block() {
+    run_cfg --install --sync x
+    # VS Code adds a host to the object it finds: ours, inside the block
+    python3 - "$SETTINGS" <<PY
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace('"${HP}x": "linux"', '"${HP}x": "linux",\n    "devbox": "linux"')
+open(p, "w").write(s)
+PY
+    run_cfg --sync y
+    [ "$(settings_get '."remote.SSH.remotePlatform"')" = "{\"devbox\":\"linux\",\"${HP}y\":\"linux\"}" ] || fail "sync: $(cat "$SETTINGS")"
+    run_cfg --remove
+    [ "$(settings_get '.')" = '{"remote.SSH.remotePlatform":{"devbox":"linux"}}' ] || fail "remove: $(cat "$SETTINGS")"
+    assert_file_not_contains "$SETTINGS" "$TOOL:begin"
+}
+
+# VS Code appends a new setting after the last property, which on a fresh
+# file is ours, inside the block: it is moved out, and survives --remove.
+case_merger_moves_foreign_keys_out_of_block() {
+    printf '{}' > "$SETTINGS"
+    run_cfg --install --sync x
+    python3 - "$SETTINGS" <<'PY2'
+import sys
+p = sys.argv[1]; s = open(p).read()
+assert '"remote.SSH.useLocalServer": false\n' in s
+s = s.replace('"remote.SSH.useLocalServer": false', '"remote.SSH.useLocalServer": false,\n  "editor.tabSize": 2')
+open(p, "w").write(s)
+PY2
+    run_cfg --sync x y
+    assert_rc 0
+    [ "$(settings_get '."editor.tabSize"')" = 2 ] || fail "VS Code's key lost: $(cat "$SETTINGS")"
+    sed -n "/$TOOL:end/,\$p" "$SETTINGS" | grep -q '"editor.tabSize": 2' || fail "key not moved after the end marker: $(cat "$SETTINGS")"
+    run_cfg --sync y
+    assert_rc 0
+    run_cfg --remove
+    assert_rc 0
+    [ "$(settings_get '.')" = '{"editor.tabSize":2}' ] || fail "remove: $(cat "$SETTINGS")"
+}
+
+# A block written by min-vscode 0.1.0 (its end marker a /* */ comment, mid-line,
+# right before the file's own text) is refreshed into the new form, and
+# --remove, from either, gives back the original bytes.
+case_merger_upgrades_old_block() {
+    for orig in '{}' '{\n  "a": 1\n}\n'; do
+        for then in sync remove; do
+            rm -f "$STATE/settings-installed" "$STATE/settings-created"
+            # shellcheck disable=SC2059  # the probe is a printf format on purpose
+            printf "$orig" > "$T/orig.json"
+            # shellcheck disable=SC2016  # the backquotes are literal
+            { printf '{\n  // %s:begin (managed by `%s config`; `%s config --remove` removes it)\n' "$TOOL" "$TOOL" "$TOOL"
+              printf '  "remote.SSH.remotePlatform": {\n    "%sx": "linux"\n  },\n  "remote.SSH.useLocalServer": false' "$HP"
+              [ "$orig" = '{}' ] || printf ','
+              printf '\n  /* %s:end */' "$TOOL"
+              tail -c +2 "$T/orig.json"; } > "$SETTINGS"
+            : > "$STATE/settings-installed"
+            if [ "$then" = sync ]; then
+                run_cfg --sync x
+                assert_rc 0
+                assert_file_not_contains "$SETTINGS" "/* $TOOL:end */"
+                assert_file_contains "$SETTINGS" "// $TOOL:end"
+                [ "$(settings_get '."remote.SSH.remotePlatform"')" = "{\"${HP}x\":\"linux\"}" ] || fail "sync: $(cat "$SETTINGS")"
+                [ "$(settings_get '."remote.SSH.useLocalServer"')" = false ] || fail "useLocalServer: $(cat "$SETTINGS")"
+            fi
+            run_cfg --remove
+            assert_rc 0
+            cmp -s "$T/orig.json" "$SETTINGS" || { fail "$then on '$orig': not restored"; od -c "$SETTINGS" | head -4 | sed 's/^/#   /' >&2; }
+        done
+    done
+}
+
+case_merger_bad_jsonc_left_alone() {
+    printf '{ "a": ' > "$SETTINGS"
+    run_cfg --install --sync x
+    assert_rc 1
+    assert_err_contains "cannot parse as JSONC"
+    assert_file "$SETTINGS" '{ "a": '
+}
+
+# min 0.7.0 is the oldest supported; newer and dev builds pass.
+case_doctor_min_version() {
+    for v in 0.7.0 0.7.3 0.8.0-dev.241.g7097b969 1.0.0; do
+        STUB_MIN_VERSION=$v sh "$BIN" doctor > "$T/out" 2>&1 < /dev/null
+        grep -Eq "^ok +min +.* $v\$" "$T/out" || fail "$v: $(grep -E '^[a-zA-Z]+ +min ' "$T/out")"
+    done
+    for v in 0.6.0 0.6.9 garbage; do
+        STUB_MIN_VERSION=$v sh "$BIN" doctor > "$T/out" 2>&1 < /dev/null
+        grep -Eq "^FAIL +min +.*needs min 0\.7\.0 or newer" "$T/out" || fail "$v: $(grep -E '^[a-zA-Z]+ +min ' "$T/out")"
+    done
+}
+
+case_doctor_rows() {
+    [ -x /usr/bin/ssh ] || { skip "no /usr/bin/ssh"; return 0; }
+    mkdir -p "$HOME/.config/minimal/loadouts"; : > "$HOME/.config/minimal/loadouts/vscode.toml"
+    printf 'vscode\n' > "$FIXTURES/loadouts.txt"
+    run doctor
+    assert_rc 1
+    grep -Eq '^FAIL +ssh-config +not installed' "$T/out" || fail "ssh-config row: $(grep ssh-config "$T/out")"
+    installed
+    run config
+    run doctor
+    assert_rc 0
+    grep -Eq '^ok +editor +VS Code 1.105.0 \(commit 0123456789abcdef0123456789abcdef01234567\)' "$T/out" || fail "editor row: $(cat "$T/out")"
+    grep -Eq '^ok +remote-ssh' "$T/out" || fail "remote-ssh row"
+    grep -Eq "^ok +settings +remote.SSH.remotePlatform: 1 ${HP}\\* host" "$T/out" || fail "settings row: $(grep settings "$T/out")"
+    grep -Eq '^ok +ssh-config +1 stanza' "$T/out" || fail "ssh-config row"
+    grep -Eq '^warn +sessions +not activated by' "$T/out" || fail "alpha was not activated by us: $(cat "$T/out")"
+    : > "$FIXTURES/no-remote-ssh"
+    run doctor
+    assert_rc 1
+    assert_out_contains "code --install-extension ms-vscode-remote.remote-ssh"
+}
+
+# ---- client surface (the extension's calls) ----------------------------------
+
+case_new_empty_no_window() {
+    installed
+    sessions_after box-amber "$STATE/box"
+    reset_log
+    run new --empty --no-window
+    assert_rc 0
+    assert_out_eq "${HP}box-amber"
+    assert_log_contains "min session activate --no-prompt --sync none --loadout vscode $STATE/box"
+    assert_log_contains "min session exec box-amber sh -c <script>"
+    assert_log_not_contains "code --remote"
+    run new --empty "$P"
+    assert_rc 1
+    assert_err_contains "new: --empty takes no PATH"
+    run open --empty
+    assert_rc 1
+    assert_err_contains "open: unknown option --empty"
+}
+
+case_attach_no_window() {
+    installed
+    reset_log
+    run attach alpha --no-window
+    assert_rc 0
+    assert_out_eq "${HP}alpha"
+    assert_log_contains "min session exec alpha sh -c <script>"
+    assert_log_not_contains "code --remote"
+    run attach --no-window alpha
+    assert_rc 0
+    assert_log_not_contains "code --remote"
+    run attach alpha
+    assert_log_contains "code --remote ssh-remote+${HP}alpha /workbench"
+}
+
+case_destroy_if_idle() {
+    orphan_sessions
+    exec_line 101 1 alpha
+    run destroy -y --if-idle alpha
+    assert_rc 3
+    assert_err_contains "alpha is in use now; not destroying"
+    assert_log_not_contains "session destroy"
+    run destroy --if-idle -y beta
+    assert_rc 0
+    assert_log_contains "min session destroy beta"
+    run destroy -z beta
+    assert_rc 1
+}
+
+# min refuses a session with unsaved changes when nobody can confirm: exit 4,
+# and only -y --force discards them.
+case_destroy_unsaved_needs_force() {
+    alpha_facts
+    : > "$FIXTURES/destroy.needs-force"
+    run destroy -y alpha
+    assert_rc 4
+    assert_err_contains "refusing to destroy the session without confirmation"
+    assert_err_contains "alpha has changes min has not saved; destroy -y --force alpha discards them"
+    assert_file "$STATE/sessions/alpha/user"
+    run destroy --force alpha
+    assert_rc 1
+    assert_err_contains "destroy: --force needs -y"
+    reset_log
+    run destroy -y --force alpha
+    assert_rc 0
+    assert_log_contains "min session destroy alpha --force"
+    assert_no_file "$STATE/sessions/alpha"
+}
+
+case_status_json() {
+    orphan_sessions
+    rm -rf "$STATE/sessions/gamma"
+    jq --arg sb "$STATE/box" '.sessions += [{"id":"ID-Y","name":"box-amber","project_path":$sb,"status":"active"},
+        {"id":"ID-X","name":"Bad Name","project_path":"/x","status":"active"}]' "$FIXTURES/sessions.json" > "$T/s.json" \
+        && cp "$T/s.json" "$FIXTURES/sessions.json"
+    own box-amber
+    exec_line 101 1 alpha
+    age beta 7200
+    run status --json
+    assert_rc 0
+    j=$(cat "$T/out")
+    [ "$(printf '%s' "$j" | jq -r 'map(.name) | join(" ")')" = "alpha beta gamma stopped box-amber" ] || fail "names: $j"
+    [ "$(printf '%s' "$j" | jq -c '.[0]')" = "{\"name\":\"alpha\",\"status\":\"active\",\"project\":\"$AP\",\"own\":true,\"empty\":false,\"in_use\":true,\"idle\":null}" ] \
+        || fail "alpha: $(printf '%s' "$j" | jq -c '.[0]')"
+    b=$(printf '%s' "$j" | jq '.[1].idle')
+    [ "$b" -ge 7200 ] && [ "$b" -lt 7260 ] || fail "beta idle: $b"
+    [ "$(printf '%s' "$j" | jq '.[2].own')" = false ] || fail "gamma is not own"
+    [ "$(printf '%s' "$j" | jq '.[4].empty')" = true ] || fail "empty flag"
+    run status --bogus
+    assert_rc 1
+}
+
+case_setup_installs_follows_and_removes() {
+    mkdir -p "$HOME/.ssh"; printf 'Host *\n    ServerAliveInterval 30\n' > "$HOME/.ssh/config"
+    cp "$HOME/.ssh/config" "$T/ssh_config.orig"
+    cl=$HOME/.local/bin/$TOOL
+    ld=$HOME/.config/minimal/loadouts/vscode.toml
+    lo=$(cd "$BINDIR/.." && pwd -P)/loadouts/vscode.toml
+    run setup
+    assert_rc 0
+    [ "$(readlink "$cl")" = "$SELF" ] || fail "CLI link: $(readlink "$cl")"
+    [ "$(readlink "$ld")" = "$lo" ] || fail "loadout link: $(readlink "$ld")"
+    # $LOADOUT_ROOT: a real directory, a marked copy, the skill inside
+    ldd=${ld%.toml}
+    [ -d "$ldd" ] && [ ! -L "$ldd" ] || fail "$ldd is not a real directory"
+    cmp -s "$ldd/skills/minimal-sandbox/SKILL.md" "${lo%.toml}/skills/minimal-sandbox/SKILL.md" || fail "skill not copied"
+    assert_file "$ldd/.$TOOL-copy"
+    # Minimal's host skills for the agents on the Mac; not the in-box one
+    for sk in "$HOME/.copilot/skills" "$HOME/.claude/skills"; do
+        for n in minimal-setup minimal-config minimal-loadouts minimal-networking minimal-diag; do
+            assert_file "$sk/$n/SKILL.md"
+        done
+        assert_file "$sk/minimal-config/references/tasks-examples.md"
+        assert_no_file "$sk/minimal-sandbox"
+    done
+    sk=$HOME/.claude/skills
+    assert_file_contains "$HOME/.ssh/config" "$MARK2"
+    assert_file "$HOME/$CONF"
+    assert_file "$STATE/settings-installed"
+    # an older copy (an extension's previous version dir, now gone) is followed
+    ln -sfn "$T/old-ext/cli/bin/$TOOL" "$cl"
+    ln -sfn "$T/old-ext/cli/loadouts/vscode.toml" "$ld"
+    run setup
+    assert_rc 0
+    [ "$(readlink "$cl")" = "$SELF" ] || fail "CLI link not followed: $(readlink "$cl")"
+    [ "$(readlink "$ld")" = "$lo" ] || fail "loadout link not followed: $(readlink "$ld")"
+    # something that is not ours stays, and setup says so
+    mkdir -p "$T/elsewhere"; : > "$T/elsewhere/other"
+    ln -sfn "$T/elsewhere/other" "$cl"
+    rm -f "$ld"; echo mine > "$ld"
+    rm -rf "$ldd"; mkdir -p "$ldd"; echo mine > "$ldd/x"
+    rm -rf "$sk/minimal-setup"; mkdir -p "$sk/minimal-setup" "$sk/theirs"; echo mine > "$sk/minimal-setup/SKILL.md"
+    run setup
+    assert_rc 1
+    assert_err_contains "leaving $ldd: not made by $TOOL"
+    assert_file "$ldd/x" mine
+    assert_err_contains "leaving $sk/minimal-setup: not made by $TOOL"
+    assert_file "$sk/minimal-setup/SKILL.md" mine
+    assert_err_contains "leaving $cl: it points to $T/elsewhere/other"
+    assert_err_contains "leaving $ld: not a symlink"
+    [ "$(readlink "$cl")" = "$T/elsewhere/other" ] || fail "foreign link replaced"
+    assert_file "$ld" mine
+    rm -rf "$cl" "$ld" "$ldd" "$sk/minimal-setup"
+    run setup
+    run setup --remove
+    assert_rc 0
+    assert_no_file "$cl"
+    assert_no_file "$ld"
+    assert_no_file "$ldd"
+    assert_no_file "$HOME/.copilot/skills/minimal-config"
+    assert_no_file "$sk/minimal-config"
+    [ -d "$sk/theirs" ] || fail "a skill dir that is not ours was removed"
+    assert_no_file "$HOME/$CONF"
+    cmp -s "$HOME/.ssh/config" "$T/ssh_config.orig" || fail "$HOME/.ssh/config not restored"
+    [ ! -f "$SETTINGS" ] || assert_file_not_contains "$SETTINGS" "min-vscode:begin"
+    run setup --bogus
+    assert_rc 1
+}
+
+# loadout_hook N: the Nth (from 0) inline on_activate script of the loadout,
+# between the lines `on_activate.value = '''` and `'''`.
+loadout_hook() {
+    awk -v want="$1" -v q="'''" '$0 == "on_activate.value = " q { on = (n++ == want); next }
+        $0 == q { on = 0; next } on' "$ROOT/loadouts/vscode.toml"
+}
+
+case_loadout_rc_line_once() {
+    B=$T/box; mkdir -p "$B"
+    HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+    HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+    [ "$(grep -c 'min:workbench' "$B/.bashrc")" = 1 ] || fail ".bashrc: $(cat "$B/.bashrc")"
+    [ "$(grep -c 'min:workbench' "$B/.zshrc")" = 1 ] || fail ".zshrc: $(cat "$B/.zshrc")"
+    assert_file "$B/.bash_profile"
+}
+
+# ---- ssh-config ----------------------------------------------------------------
+
+case_sshconfig_install_creates_include_and_stanza() {
+    installed
+    assert_err_contains "added \`$MARK2\` to the top of $HOME/.ssh/config"
+    assert_err_contains "$HOME/$CONF: 1 stanza(s); ssh ${HP}NAME reaches a session"
+    assert_file "$HOME/.ssh/config" "$MARK1
+$MARK2"
+    assert_file "$HOME/$CONF" "$(conf_expected alpha)"
+    assert_mode "$HOME/.ssh" 700
+    assert_mode "$HOME/.ssh/config" 600
+    assert_mode "$HOME/$CONF" 600
+    cp "$HOME/$CONF" "$T/first.conf"; cp "$HOME/.ssh/config" "$T/first.config"
+    run ssh-config
+    assert_rc 0
+    ! grep -q 'added' "$T/err" || fail "second install must not add the Include again"
+    cmp -s "$T/first.config" "$HOME/.ssh/config" || fail "config changed on a second install"
+    cmp -s "$T/first.conf" "$HOME/$CONF" || fail "conf changed on a second install"
+}
+
+existing_config() {
+    mkdir -p "$HOME/.ssh"
+    printf '# mine\nHost other\n    HostName example.org' > "$HOME/.ssh/config"
+    cp "$HOME/.ssh/config" "$T/orig.config"
+}
+
+case_sshconfig_remove_restores_original() {
+    existing_config
+    installed
+    { printf '%s\n%s\n' "$MARK1" "$MARK2"; cat "$T/orig.config"; } > "$T/want.config"
+    cmp -s "$T/want.config" "$HOME/.ssh/config" || fail "config is not marker + Include + original bytes"
+    run ssh-config --remove
+    assert_rc 0
+    assert_err_contains "removed the $TOOL Include from $HOME/.ssh/config"
+    cmp -s "$T/orig.config" "$HOME/.ssh/config" || fail "config not restored byte for byte"
+    assert_no_file "$HOME/$CONF"
+    run ssh-config --remove
+    assert_err_contains "no $TOOL Include found in $HOME/.ssh/config"
+    cmp -s "$T/orig.config" "$HOME/.ssh/config" || fail "second --remove changed the config"
+}
+
+case_sshconfig_coexists_with_another_tool() {
+    existing_config
+    other='# min-other ssh-config (remove with: min-other ssh-config --remove)
+Include ~/.ssh/min-other.conf'
+    { printf '%s\n' "$other"; cat "$T/orig.config"; } > "$HOME/.ssh/config"
+    cp "$HOME/.ssh/config" "$T/with-other.config"
+    installed
+    run ssh-config --remove
+    cmp -s "$T/with-other.config" "$HOME/.ssh/config" || fail "another tool's Include was touched"
+}
+
+case_sshconfig_keeps_symlinked_config() {
+    mkdir -p "$T/dotfiles" "$HOME/.ssh"
+    printf 'Host other\n' > "$T/dotfiles/ssh_config"
+    ln -s "$T/dotfiles/ssh_config" "$HOME/.ssh/config"
+    installed
+    [ -L "$HOME/.ssh/config" ] || fail "$HOME/.ssh/config is no longer a symlink"
+    assert_file "$T/dotfiles/ssh_config" "$MARK1
+$MARK2
+Host other"
+}
+
+case_sshconfig_print_touches_nothing() {
+    alpha_facts
+    run ssh-config --print
+    assert_rc 0
+    assert_out_eq "$(conf_expected alpha)"
+    run ssh-config --bogus
+    assert_rc 1
+    assert_err_contains "$TOOL: ssh-config: unknown option --bogus"
+    assert_no_file "$HOME/.ssh"
+}
+
+case_sshconfig_destroy_drops_stanza() {
+    installed
+    sessions_after beta "$P"; cp "$FIXTURES/sessions.after.json" "$FIXTURES/sessions.json"
+    run ssh beta -- true
+    assert_file "$HOME/$CONF" "$(conf_expected alpha beta)"
+    run destroy -y alpha
+    assert_rc 0
+    assert_file "$HOME/$CONF" "$(conf_expected beta)"
+}
+
+case_sshconfig_stale_and_invalid_dirs_skipped() {
+    alpha_facts
+    mkdir -p "$STATE/sessions/ghost" "$STATE/sessions/my sess"
+    printf 'box\n' > "$STATE/sessions/ghost/user"; printf 'box\n' > "$STATE/sessions/my sess/user"
+    run ssh-config
+    assert_rc 0
+    assert_err_contains "1 stanza(s)"
+    assert_file_not_contains "$HOME/$CONF" "Host ${HP}ghost"
+    assert_err_contains "[$TOOL] skipping my sess: not a valid stanza name"
+    MIN_BIN=$T/no-such-min run ssh-config --print
+    grep -qF "Host ${HP}ghost" "$T/out" || fail "--print without min must list ghost"
+    ! grep -q 'MIN_BIN=' "$T/out" || fail "no MIN_BIN word expected when min is not resolvable"
+}
+
+case_sshconfig_real_ssh_resolves() {
+    [ -x /usr/bin/ssh ] || { skip "no /usr/bin/ssh"; return 0; }
+    installed
+    g=$(ssh_g "${HP}alpha")
+    d=$STATE/sessions/alpha
+    assert_line_in "$g" "user box"
+    assert_line_in "$g" "identitiesonly yes"
+    assert_line_in "$g" "stricthostkeychecking true"
+    assert_line_in "$g" "identityfile $d/id_ed25519"
+    assert_line_in "$g" "userknownhostsfile $d/known_hosts"
+    assert_line_in "$g" "proxycommand env MIN_BIN=$T/bin/min MIN_VSCODE_STATE_DIR=$STATE $SELF _proxy alpha"
+    g=$(ssh_g "${HP}nothing")
+    assert_line_in "$g" "proxycommand env MIN_VSCODE_STATE_DIR=$STATE $SELF _proxy --missing"
+    printf 'Host %sexample.com\n    User someone\n' "$HP" >> "$HOME/.ssh/config"
+    g=$(ssh_g "${HP}example.com")
+    assert_line_in "$g" "user someone"
+    ! printf '%s\n' "$g" | grep -q '^proxycommand' || fail "a dotted host got a ProxyCommand"
+}
+
+case_sshconfig_forwarding_off_despite_host_star() {
+    [ -x /usr/bin/ssh ] || { skip "no /usr/bin/ssh"; return 0; }
+    mkdir -p "$HOME/.ssh"
+    printf 'Host *\n    ForwardAgent yes\n    ForwardX11 yes\n    ForwardX11Trusted yes\n' > "$HOME/.ssh/config"
+    installed
+    g=$(ssh_g "${HP}alpha")
+    assert_line_in "$g" "forwardagent no"
+    assert_line_in "$g" "forwardx11 no"
+    assert_line_in "$g" "forwardx11trusted no"
+}
+
+case_forwarding_off_on_ssh_path() {
+    run ssh alpha -- true
+    assert_rc 0
+    assert_log_contains "-o ForwardAgent=no"
+    assert_log_contains "-o ForwardX11=no"
+    assert_log_contains "-o StrictHostKeyChecking=yes"
+    assert_log_contains "-o AddKeysToAgent=no"
+    assert_log_contains " ${HP}alpha true"
+}
+
+case_sshconfig_paths_with_spaces_and_percent() {
+    [ -x /usr/bin/ssh ] || { skip "no /usr/bin/ssh"; return 0; }
+    STATE="$T/st ate %x" MIN_VSCODE_STATE_DIR="$T/st ate %x"; export MIN_VSCODE_STATE_DIR
+    installed
+    assert_file_contains "$HOME/$CONF" "IdentityFile \"$T/st ate %%x/sessions/alpha/id_ed25519\""
+    g=$(ssh_g "${HP}alpha")
+    assert_line_in "$g" "proxycommand env MIN_BIN=$T/bin/min MIN_VSCODE_STATE_DIR='$T/st ate %%x' $SELF _proxy alpha"
+}
+
+case_sshconfig_prefers_local_bin_symlink() {
+    alpha_facts
+    mkdir -p "$HOME/.local/bin"
+    ln -s "$BIN" "$HOME/.local/bin/$TOOL"
+    run ssh-config
+    assert_file_contains "$HOME/$CONF" " $HOME/.local/bin/$TOOL _proxy alpha"
+    assert_file_not_contains "$HOME/$CONF" "$SELF"
+    rm "$HOME/.local/bin/$TOOL"; printf '#!/bin/sh\n' > "$T/other"; ln -s "$T/other" "$HOME/.local/bin/$TOOL"
+    run ssh-config
+    assert_file_contains "$HOME/$CONF" " $SELF _proxy alpha"
+}
+
+case_sshconfig_refuses_double_quote_in_state_dir() {
+    alpha_facts
+    STATE=$(printf '%s/st"q' "$T") MIN_VSCODE_STATE_DIR=$STATE; export MIN_VSCODE_STATE_DIR
+    run ssh-config
+    assert_rc 1
+    assert_err_contains "$TOOL: state dir path contains a double quote; not writing"
+    assert_no_file "$HOME/.ssh"
+}
+
+case_sshconfig_write_failure_does_not_block_ssh() {
+    installed
+    printf '# sentinel\n' >> "$HOME/$CONF"
+    cp "$HOME/$CONF" "$T/before.conf"
+    chmod 500 "$HOME/.ssh"
+    run ssh alpha -- true
+    chmod 700 "$HOME/.ssh"
+    assert_rc 0
+    assert_err_contains "[$TOOL] could not write $HOME/$CONF; leaving it as it was"
+    cmp -s "$T/before.conf" "$HOME/$CONF" || fail "conf changed although the dir was read-only"
+}
+
+case_sshconfig_min_ls_failure_keeps_stanzas() {
+    installed
+    MIN_BIN=/usr/bin/false run ssh-config
+    assert_rc 0
+    assert_err_contains "1 stanza(s)"
+    assert_file_contains "$HOME/$CONF" "MIN_BIN=/usr/bin/false "
+}
+
+case_sshconfig_unchanged_conf_not_rewritten() {
+    installed
+    touch -t 200001010000 "$HOME/$CONF"; : > "$T/stamp"
+    run _proxy alpha
+    assert_rc 0
+    [ -z "$(find "$HOME/$CONF" -newer "$T/stamp")" ] || fail "conf rewritten although unchanged"
+    sessions_after beta "$P"; cp "$FIXTURES/sessions.after.json" "$FIXTURES/sessions.json"
+    run _proxy beta
+    assert_file "$HOME/$CONF" "$(conf_expected alpha beta)"
+}
+
+case_sshconfig_remove_deletes_what_it_created() {
+    rm -rf "$STATE"
+    run ssh-config
+    assert_file "$HOME/$CREATED_REL" "dir
+config"
+    run ssh-config --remove
+    assert_rc 0
+    assert_no_file "$HOME/.ssh"
+    mkdir -p "$HOME/.ssh"; : > "$HOME/.ssh/config"
+    run ssh-config
+    run ssh-config --remove
+    assert_file "$HOME/.ssh/config" ""
+    ! grep -q 'now empty' "$T/err" || fail "must not remove a config it did not create"
+}
+
+case_sshconfig_backs_up_before_writing() {
+    existing_config
+    installed
+    b=$(find "$STATE/backups" -name 'ssh_config.*' | head -1)
+    cmp -s "$T/orig.config" "$b" || fail "backup is not the config before install"
+    assert_mode "$b" 600
+    assert_mode "$STATE/backups" 700
+}
+
+# ---- _proxy and prepare ---------------------------------------------------------
+
+case_proxy_prepares_then_execs_sshd() {
+    run _proxy alpha
+    assert_rc 0
+    d=$STATE/sessions/alpha
+    pub=$(cat "$d/id_ed25519.pub")
+    assert_log_before "min session exec alpha sh -c <script> $TOOL $pub" "min session exec alpha $SSHD_ARGV"
+    assert_file "$d/known_hosts" "${HP}alpha ssh-ed25519 AAAAFAKE"
+    assert_out_eq "sshd-stub [session] [exec] [alpha] [/usr/sbin/sshd] [-i] [-e] [-f] [/dev/null] [-h] [/home/.ssh/$TOOL/host_ed25519] [-o] [LogLevel=ERROR] [-o] [PidFile=none] [-o] [StrictModes=no] [-o] [PubkeyAuthentication=yes] [-o] [PasswordAuthentication=no] [-o] [KbdInteractiveAuthentication=no] [-o] [AuthorizedKeysFile /home/.ssh/$TOOL/authorized_keys] [-o] [PermitUserEnvironment=yes] [-o] [AllowTcpForwarding=yes] [-o] [GatewayPorts=no] [-o] [AllowAgentForwarding=no] [-o] [X11Forwarding=no] [-o] [PrintMotd=no] [-o] [PrintLastLog=no] [-o] [UseDNS=no] [-o] [Subsystem sftp internal-sftp]"
+    grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8} alpha ok$' "$STATE/proxy.log" || fail "proxy.log: $(cat "$STATE/proxy.log")"
+    assert_no_file "$HOME/.ssh"
+}
+
+case_proxy_never_touches_settings_or_editor() {
+    installed
+    run config
+    cp "$SETTINGS" "$T/before.json"
+    sessions_after beta "$P"; cp "$FIXTURES/sessions.after.json" "$FIXTURES/sessions.json"
+    reset_log
+    run _proxy beta
+    assert_rc 0
+    cmp -s "$T/before.json" "$SETTINGS" || fail "_proxy changed the settings"
+    ! grep -q '^code ' "$STUB_LOG" || fail "_proxy ran the editor"
+}
+
+case_proxy_failures() {
+    : > "$FIXTURES/facts.txt"
+    run _proxy alpha
+    assert_rc 1
+    assert_err_contains "incomplete facts"
+    [ ! -s "$T/out" ] || fail "nothing may reach stdout before the exec: $(cat "$T/out")"
+    grep -q ' alpha fail: prepare$' "$STATE/proxy.log" || fail "proxy.log: $(cat "$STATE/proxy.log")"
+    run _proxy nope
+    assert_rc 1
+    assert_err_contains "$TOOL: no session named nope"
+    [ ! -s "$T/out" ] || fail "nothing may reach stdout"
+}
+
+case_proxy_missing_takes_no_host() {
+    reset_log
+    run _proxy --missing
+    assert_rc 1
+    assert_err_contains "$MISSING_MSG"
+    # shellcheck disable=SC2016 # literal on purpose
+    run _proxy --missing 'x.$(touch pwned)'
+    assert_err_contains "$MISSING_MSG"
+    ! grep -qF 'pwned' "$T/err" || fail "host argument echoed"
+    assert_log_not_contains "min "
+    MIN_BIN=/nonexistent PATH=/usr/bin:/bin sh "$BIN" _proxy --missing > "$T/out" 2> "$T/err" < /dev/null; RC=$?
+    assert_rc 1
+    assert_err_contains "$MISSING_MSG"
+}
+
+case_proxy_log_capped_and_private() {
+    i=0; while [ $i -lt 1000 ]; do echo "old $i"; i=$((i + 1)); done > "$STATE/proxy.log"
+    chmod 644 "$STATE/proxy.log"
+    run _proxy alpha
+    assert_mode "$STATE/proxy.log" 600
+    [ "$(($(wc -l < "$STATE/proxy.log")))" = 500 ] || fail "proxy.log not capped to 500"
+    rm "$STATE/proxy.log"; mkdir "$STATE/proxy.log"
+    run _proxy alpha
+    assert_rc 0
+    [ ! -s "$T/err" ] || fail "stderr: $(cat "$T/err")"
+}
+
+# _proxy runs prepare under `||` (set -e off): a fact that cannot be written
+# still fails the connect, and is logged.
+case_proxy_prepare_write_failure() {
+    alpha_facts
+    # put's mktemp fails for the session dir (as on a full disk)
+    printf '#!/bin/sh\ncase "$*" in *sessions/alpha/*) exit 1 ;; esac\nexec /usr/bin/mktemp "$@"\n' > "$T/bin/mktemp"
+    chmod +x "$T/bin/mktemp"
+    run _proxy alpha
+    assert_rc 1
+    assert_err_contains "could not write the facts for alpha"
+    grep -q ' alpha fail: prepare$' "$STATE/proxy.log" || fail "proxy.log: $(cat "$STATE/proxy.log" 2>/dev/null)"
+    ! grep -q ' alpha ok$' "$STATE/proxy.log" || fail "logged ok after a failed write"
+}
+
+case_prepare_writes_atomically() {
+    d=$STATE/sessions/alpha
+    mkdir -p "$d"
+    printf 'DECOY\n' > "$T/decoy"
+    ln -s "$T/decoy" "$d/known_hosts"
+    alpha_facts
+    [ ! -L "$d/known_hosts" ] || fail "known_hosts is still a symlink: written in place"
+    assert_file "$T/decoy" DECOY
+    assert_file "$d/user" box
+}
+
+# reject_fact FIELD LINE: prepare fails naming FIELD and nothing on disk changes.
+reject_fact() {
+    grep -v "^$1=" "$FIXTURES/facts.txt" > "$T/facts.tmp"; printf '%s\n' "$2" >> "$T/facts.tmp"
+    cp "$T/facts.tmp" "$FIXTURES/facts.txt"
+    run ssh alpha -- true
+    assert_rc 1
+    assert_err_contains "$TOOL: session alpha reported an invalid $1 ("
+    for f in known_hosts user home sshd; do
+        cmp -s "$STATE/sessions/alpha/$f" "$T/snap/$f" || fail "$1 '$2': sessions/alpha/$f changed"
+    done
+    cmp -s "$HOME/$CONF" "$T/snap/conf" || fail "$1 '$2': conf changed"
+    default_fixtures
+}
+
+case_prepare_rejects_bad_facts() {
+    installed
+    mkdir -p "$T/snap"
+    for f in known_hosts user home sshd; do cp "$STATE/sessions/alpha/$f" "$T/snap/$f"; done
+    cp "$HOME/$CONF" "$T/snap/conf"
+    # shellcheck disable=SC2016 # literal on purpose
+    for u in 'user=${HOME}' 'user=a b' 'user=%h' 'user=-oops' 'user=r`id`' 'user=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do reject_fact user "$u"; done
+    # shellcheck disable=SC2016
+    for k in 'hostkey=ssh-rsa AAAAFAKE' 'hostkey=ssh-ed25519 AAAAFAKE extra' 'hostkey=ssh-ed25519 AA$AA'; do reject_fact hostkey "$k"; done
+    # shellcheck disable=SC2016
+    for h in 'home=home' 'home=/ho"me' 'home=/h%h' 'home=/h$X' 'home=/a b' "$(printf 'home=/a\033b')"; do reject_fact home "$h"; done
+    for x in 'sshd=sshd' 'sshd=/a%d'; do reject_fact sshd "$x"; done
+}
+
+case_prepare_accepts_valid_facts() {
+    printf 'user=First.last_1-x\nhome=/home/u-1.x@y+z\nsshd=/nix/store/abc-openssh/bin/sshd\nhostkey=ssh-ed25519 AAAAC3+/z9==\n' > "$FIXTURES/facts.txt"
+    installed
+    assert_file "$STATE/sessions/alpha/known_hosts" "${HP}alpha ssh-ed25519 AAAAC3+/z9=="
+    assert_file_contains "$HOME/$CONF" "    User First.last_1-x"
+}
+
+case_prepare_errors_strip_control_bytes() {
+    printf 'user=box\nhome=/h\033]0;x\007%%\nsshd=/usr/sbin/sshd\nhostkey=ssh-ed25519 AAAAFAKE\n' > "$FIXTURES/facts.txt"
+    run ssh alpha -- true
+    assert_rc 1
+    assert_err_contains "invalid home (/h?]0;x?%)"
+    ! LC_ALL=C grep -q "$(printf '\033')" "$T/err" || fail "ESC reached stderr"
+}
+
+case_stored_user_checked_on_read() {
+    installed
+    # shellcheck disable=SC2016 # literal on purpose
+    printf '${HOME}\n' > "$STATE/sessions/alpha/user"
+    run ssh-config --print
+    ! grep -q "^Host ${HP}alpha\$" "$T/out" || fail "stanza with a bad stored user printed"
+    assert_err_contains "skipping alpha: invalid user in $STATE/sessions/alpha/user"
+}
+
+# _proxy re-reads home/sshd after prepare; a no-op prepare leaves a bad
+# stored path in place so the client-layer fact_ok can fire (TOCTOU window).
+# Sourcing clears MIN (client layer); re-set it after `.`.
+case_proxy_rechecks_stored_paths() {
+    alpha_facts
+    sed '/^# ---- main/,$d' "$BIN" > "$T/lib"
+    # shellcheck disable=SC2016 # literal on purpose
+    printf '/h$(x)\n' > "$STATE/sessions/alpha/home"
+    sh -c '. "$1"; MIN=$2; prepare() { :; }; cmd_proxy alpha' sh "$T/lib" "$MIN_BIN" >"$T/out" 2>"$T/err"
+    RC=$?
+    assert_rc 1
+    assert_err_contains "session alpha: invalid home in $STATE/sessions/alpha/home; not using it"
+    [ ! -s "$T/out" ] || fail "nothing may reach stdout before the exec: $(cat "$T/out")"
+    grep -q " alpha fail: invalid home in $STATE/sessions/alpha/home\$" "$STATE/proxy.log" || fail "proxy.log: $(cat "$STATE/proxy.log")"
+    # `ssh` builds its ProxyCommand from the same stored paths
+    sh -c '. "$1"; MIN=$2; ssh_opts alpha' sh "$T/lib" "$MIN_BIN" >"$T/out" 2>"$T/err"
+    RC=$?
+    assert_rc 1
+    assert_err_contains "session alpha: invalid home in $STATE/sessions/alpha/home; not using it"
+    ! grep -q ProxyCommand "$T/out" || fail "ssh_opts printed a ProxyCommand: $(cat "$T/out")"
+    printf '/home\n' > "$STATE/sessions/alpha/home"
+    printf 'sshd\n' > "$STATE/sessions/alpha/sshd"
+    sh -c '. "$1"; MIN=$2; prepare() { :; }; cmd_proxy alpha' sh "$T/lib" "$MIN_BIN" >"$T/out" 2>"$T/err"
+    RC=$?
+    assert_rc 1
+    assert_err_contains "session alpha: invalid sshd in $STATE/sessions/alpha/sshd; not using it"
+    [ ! -s "$T/out" ] || fail "nothing may reach stdout before the exec: $(cat "$T/out")"
+    sh -c '. "$1"; MIN=$2; ssh_opts alpha' sh "$T/lib" "$MIN_BIN" >"$T/out" 2>"$T/err"
+    RC=$?
+    assert_rc 1
+    assert_err_contains "session alpha: invalid sshd in $STATE/sessions/alpha/sshd; not using it"
+}
+
+# ---- PREP for real (the min stub only serves facts.txt) ----
+
+prep_script() { sed -n "/^PREP='/,/'\$/p" "$BIN" | sed -e "1s/^PREP='//" -e "\$s/'\$//"; }
+run_prep() {
+    HOME=$T/box sh -c "$(prep_script)" "$TOOL" "ssh-ed25519 AAAAUSER user" > "$1" 2> "$1.err" < /dev/null
+}
+BOXD=.ssh/$TOOL   # host key and authorized_keys dir under $T/box
+
+assert_facts_only() {
+    [ -s "$1" ] || fail "no facts in $1"
+    ! grep -Ev '^[a-z]+=' "$1" >/dev/null || fail "non-fact stdout in $1: $(grep -Ev '^[a-z]+=' "$1")"
+}
+
+case_prep_extracts_and_prints_facts() {
+    prep_script | grep -q '^echo "hostkey=' || fail "prep_script did not cut PREP out of the CLI"
+    run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
+    assert_facts_only "$T/p1"
+    assert_line_in "$(cat "$T/p1")" "hostkey=ssh-ed25519 AAAAPUB"
+    assert_file "$T/box/.ssh/$TOOL/authorized_keys" "ssh-ed25519 AAAAUSER user"
+    assert_mode "$T/box/$BOXD/host_ed25519" 600
+    run_prep "$T/p2" || fail "second PREP failed"
+    assert_log_count 1 "ssh-keygen"
+    [ "$(grep -c 'min:workbench' "$T/box/.zshrc")" = 1 ] || fail "rc line repeated"
+}
+
+case_prep_waiter_keeps_lock_it_does_not_own() {
+    mkdir -p "$T/box/$BOXD/.keygen"
+    MIN_KEYGEN_WAIT=2 run_prep "$T/p1"
+    grep -q "did not finish" "$T/p1.err" || fail "stderr: $(cat "$T/p1.err")"
+    [ -d "$T/box/$BOXD/.keygen" ] || fail "waiter removed a lock it does not own"
+    assert_log_count 0 "ssh-keygen"
+}
+
+case_prep_breaks_stale_lock() {
+    mkdir -p "$T/box/$BOXD/.keygen"
+    touch -t 200001010000 "$T/box/$BOXD/.keygen"
+    MIN_KEYGEN_WAIT=2 run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
+    assert_log_count 1 "ssh-keygen"
+    assert_no_file "$T/box/$BOXD/.keygen"
+}
+
+prep_parallel() {
+    n=1; while [ "$n" -le "$1" ]; do run_prep "$T/p$n" & n=$((n + 1)); done
+    wait
+}
+assert_one_key() {
+    k=$(cut -d' ' -f1-2 "$T/box/$BOXD/host_ed25519.pub")
+    n=1; while [ "$n" -le "$1" ]; do
+        assert_facts_only "$T/p$n"
+        assert_line_in "$(cat "$T/p$n")" "hostkey=$k"
+        n=$((n + 1))
+    done
+    [ "$(cat "$T/box/$BOXD/host_ed25519")" = "PRIVATE ${k#ssh-ed25519 AAAAPUB}" ] || fail "key pair mismatch"
+    assert_log_count 1 "ssh-keygen"
+    assert_no_file "$T/box/$BOXD/.keygen"
+    [ -z "$(find "$T/box/$BOXD" -name '.new.*')" ] || fail "temp key left behind"
+}
+
+case_prep_concurrent_runs_agree_on_host_key() {
+    export STUB_KEYGEN_DELAY=1.5 MIN_KEYGEN_WAIT=10
+    prep_parallel 4
+    assert_one_key 4
+}
+
+case_prep_regenerates_half_pair() {
+    ln -s "$STUBS/mv" "$T/bin/mv"
+    export STUB_KEYGEN_DELAY=0.2 STUB_MV_DELAY=1.5 MIN_KEYGEN_WAIT=10
+    mkdir -p "$T/box/$BOXD"
+    printf 'ssh-ed25519 AAAAOLD old\n' > "$T/box/$BOXD/host_ed25519.pub"
+    prep_parallel 4
+    assert_one_key 4
+}
+
+case_prep_keygen_failure_releases_lock() {
+    export STUB_KEYGEN_FAIL=1
+    run_prep "$T/p1" && fail "PREP succeeded with a failing ssh-keygen"
+    assert_no_file "$T/box/$BOXD/.keygen"
+    assert_no_file "$T/box/$BOXD/host_ed25519"
+    [ ! -s "$T/p1" ] || fail "stdout on failure"
+}
+
+case_prep_stale_lock_stress() {
+    ln -s "$STUBS/find" "$T/bin/find"
+    export STUB_KEYGEN_DELAY=jitter
+    r=0; while [ "$r" -lt 4 ]; do
+        rm -rf "$T/box/.ssh"; reset_log
+        mkdir -p "$T/box/$BOXD/.keygen"
+        touch -t 200001010000 "$T/box/$BOXD/.keygen"
+        prep_parallel 8
+        assert_one_key 8
+        [ ! -e "$T/fail" ] || { fail "round $r"; break; }
+        r=$((r + 1))
+    done
+}
+
+# ---- misc ----------------------------------------------------------------------
+
+case_completions_parse() {
+    run completions zsh
+    assert_rc 0
+    assert_out_contains "compdef _min_vscode $TOOL"
+    if command -v zsh >/dev/null 2>&1; then zsh -n "$T/out" || fail "zsh completion does not parse"; fi
+    run completions bash
+    assert_rc 0
+    if command -v bash >/dev/null 2>&1; then bash -n "$T/out" || fail "bash completion does not parse"; fi
+    run completions fish
+    assert_rc 1
+}
+
+case_sessions_lists_names() {
+    run _sessions
+    assert_out_eq alpha
+}
+
+case_usage() {
+    run --help
+    assert_rc 0
+    assert_out_contains "usage: $TOOL <command>"
+    run bogus
+    assert_rc 2
+}
+
+# make_tool_b: a second min-<client> tool at $T/tool-b/min-zz: this script,
+# other names (TOOL min-zz, Host prefix min-zz., state $MIN_ZZ_STATE_DIR).
+make_tool_b() {
+    mkdir -p "$T/tool-b"
+    # shellcheck disable=SC2016  # $MIN_ZZ_STATE_DIR is for the copy
+    sed -e 's/^TOOL=min-vscode$/TOOL=min-zz/' -e 's/^HOST_PREFIX=.*/HOST_PREFIX=min-zz./' \
+        -e 's/^ENV_PREFIX=MIN_VSCODE$/ENV_PREFIX=MIN_ZZ/' -e 's/^STATE=.*/STATE=$MIN_ZZ_STATE_DIR/' "$BIN" > "$T/tool-b/min-zz"
+    grep -qx 'TOOL=min-zz' "$T/tool-b/min-zz" || fail "tool b not made"
+}
+run_b() { MIN_ZZ_STATE_DIR=$T/state-b sh "$T/tool-b/min-zz" "$@" > "$T/out" 2> "$T/err" < /dev/null; RC=$?; }
+
+# Two tools install and remove in every order: ~/.ssh/config ends byte for
+# byte as it was, or is gone (with ~/.ssh) when neither found one.
+case_sshconfig_two_tools_coexist() {
+    make_tool_b
+    for start in none existing; do
+        # shellcheck disable=SC2086  # word-split on purpose
+        for order in "a b a b" "a b b a" "b a a b" "b a b a"; do
+            rm -rf "$HOME/.ssh" "$HOME/.local/state/min-clients"
+            [ "$start" = none ] || existing_config
+            set -- $order
+            for t in "$1" "$2"; do
+                if [ "$t" = a ]; then run ssh-config; else run_b ssh-config; fi
+                assert_rc 0
+            done
+            assert_file_contains "$HOME/.ssh/config" "Include ~/.ssh/$TOOL.conf"
+            assert_file_contains "$HOME/.ssh/config" "Include ~/.ssh/min-zz.conf"
+            first=$3
+            for t in "$3" "$4"; do
+                if [ "$t" = a ]; then run ssh-config --remove; else run_b ssh-config --remove; fi
+                assert_rc 0
+                [ "$t" = "$first" ] || continue
+                # the first removal leaves the other tool working
+                if [ "$t" = a ]; then o=min-zz; else o=$TOOL; fi
+                assert_file_contains "$HOME/.ssh/config" "Include ~/.ssh/$o.conf"
+                [ -f "$HOME/.ssh/$o.conf" ] || fail "$start/$order: $o.conf removed by the other tool"
+            done
+            if [ "$start" = none ]; then
+                assert_no_file "$HOME/.ssh"
+            else
+                cmp -s "$T/orig.config" "$HOME/.ssh/config" || fail "$start/$order: config not restored byte for byte"
+            fi
+            assert_no_file "$HOME/$CREATED_REL"
+        done
+    done
+}
+
+# min skips default_loadouts once any --loadout is named: open passes them on.
+case_open_keeps_default_loadouts() {
+    installed
+    mkdir -p "$HOME/.config/minimal"
+    printf '[other]\ndefault_loadouts = ["no"]\n[loadouts] # mine\ndefault_loadouts = [\n  "dots", # comment\n  "vscode", "bad name",\n  "broker"]\n[after]\nx = ["nope"]\n' \
+        > "$HOME/.config/minimal/config.toml"
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_rc 0
+    assert_log_contains "min session activate --no-prompt --loadout dots --loadout broker --loadout vscode $P"
+}
+
+# default_loadouts in the other TOML spellings.
+case_open_default_loadouts_toml_forms() {
+    installed
+    mkdir -p "$HOME/.config/minimal"
+    sessions_after proj-amber "$P"
+    printf "loadouts.default_loadouts = ['dots']\n[loadouts]\nx = 1\n" > "$HOME/.config/minimal/config.toml"
+    run open "$P"
+    assert_rc 0
+    assert_log_contains "min session activate --no-prompt --loadout dots --loadout vscode $P"
+    printf "[ loadouts ]\ndefault_loadouts = [ 'a.b', 'x y' ]\n" > "$HOME/.config/minimal/config.toml"
+    printf '{"sessions":[]}\n' > "$FIXTURES/sessions.json"; reset_log
+    run open "$P"
+    assert_log_contains "min session activate --no-prompt --loadout a.b --loadout vscode $P"
+    assert_err_contains "ignoring default loadout 'x y'"
+    printf '[loadouts]\ndefault_loadouts = [dots]\n' > "$HOME/.config/minimal/config.toml"
+    printf '{"sessions":[]}\n' > "$FIXTURES/sessions.json"; reset_log
+    run open "$P"
+    assert_log_contains "min session activate --no-prompt --loadout vscode $P"
+    assert_err_contains "could not read default_loadouts in $HOME/.config/minimal/config.toml"
+    printf '[loadouts]\ndefault_loadouts = []\n' > "$HOME/.config/minimal/config.toml"
+    printf '{"sessions":[]}\n' > "$FIXTURES/sessions.json"
+    run open "$P"
+    ! grep -q 'default_loadouts' "$T/err" || fail "an empty list is not unreadable: $(cat "$T/err")"
+}
+
+# ~/.ssh/config is rewritten under one lock every tool shares.
+case_sshconfig_lock_held_waits_then_fails() {
+    L=$HOME/.local/state/min-clients/ssh-config.lock
+    mkdir -p "$L"
+    MIN_LOCK_WAIT=1 run ssh-config
+    assert_rc 1
+    assert_err_contains "$L is held by another ssh-config run"
+    assert_no_file "$HOME/.ssh/config"
+    [ -d "$L" ] || fail "a waiter removed a lock it does not hold"
+    touch -t 200001010000 "$L"     # its holder died long ago
+    MIN_LOCK_WAIT=1 run ssh-config
+    assert_rc 0
+    assert_file_contains "$HOME/.ssh/config" "Include ~/.ssh/$TOOL.conf"
+    assert_no_file "$L"
+    MIN_LOCK_WAIT=1 run ssh-config --remove
+    assert_rc 0
+    assert_no_file "$HOME/.ssh"
+    assert_no_file "$HOME/.local/state/min-clients"
+}
+
+case_sshconfig_two_tools_install_at_once() {
+    make_tool_b
+    r=0; while [ "$r" -lt 4 ]; do
+        rm -rf "$HOME/.ssh" "$HOME/.local/state/min-clients"
+        sh "$BIN" ssh-config > "$T/a.out" 2>&1 < /dev/null & a=$!
+        MIN_ZZ_STATE_DIR=$T/state-b sh "$T/tool-b/min-zz" ssh-config > "$T/b.out" 2>&1 < /dev/null & b=$!
+        wait "$a" || fail "round $r: a failed: $(cat "$T/a.out")"
+        wait "$b" || fail "round $r: b failed: $(cat "$T/b.out")"
+        for t in "$TOOL" min-zz; do
+            [ "$(grep -cxF "Include ~/.ssh/$t.conf" "$HOME/.ssh/config")" = 1 ] || fail "round $r: $t Include lost: $(cat "$HOME/.ssh/config")"
+        done
+        r=$((r + 1))
+    done
+}
+
+# A session that comes into use while gc's questions are open is not asked about.
+case_gc_rechecks_before_each_question() {
+    orphan_sessions
+    age beta 300
+    age gamma 200
+    printf '100 1 ssh min-zed.gamma\n101 100 /opt/homebrew/bin/min session exec gamma /usr/sbin/sshd -i\n' > "$FIXTURES/ps.later.txt"
+    run_stdin 'y
+y
+y
+' gc
+    assert_rc 0
+    grep -q gamma "$T/out" || fail "gamma was idle when gc listed: $(cat "$T/out")"
+    assert_log_contains "min session destroy beta"
+    assert_log_not_contains "min session destroy gamma"
+    assert_err_contains "gamma is in use now; not asking"
+    ! grep -qF "Destroy Minimal session gamma" "$T/err" || fail "asked about gamma"
+}
+
+# A name from min that is no hostname never reaches ssh, the editor or a prompt answer.
+case_bad_session_name_refused() {
+    installed
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"ID-X","name":"x; touch PWN #","project_path":"$AP","status":"active"}]}
+JSON
+    reset_log
+    run attach 'x; touch PWN #'
+    assert_rc 1
+    assert_err_contains "session name is not lowercase letters, digits and dashes; not using it"
+    assert_log_not_contains "session exec"
+    assert_log_not_contains "code --remote"
+    run ssh 'x; touch PWN #' -- true
+    assert_rc 1
+    assert_log_not_contains "ssh -i"
+}
+
+# Safety: the CLI reaches VS Code only through $EDITOR_BIN, and the harness
+# points it at an absolute stub path.
+case_safety_gui_commands_absolute() {
+    case $MIN_VSCODE_EDITOR_BIN in "$T"/*) ;; *) fail "MIN_VSCODE_EDITOR_BIN is not an absolute stub path" ;; esac
+    bare=$(grep -nE '(^|[;&|(]|then|else|do|nohup|exec)[[:space:]]*(code|cursor|windsurf|osascript|open)([[:space:]]|$)' "$BIN" \
+        | grep -vE '^[0-9]+:[[:space:]]*#|^[0-9]+:  (open|new|attach) |cmds=\(')
+    [ -z "$bare" ] || fail "bare GUI command in the CLI: $bare"
+    installed
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_log_contains "code --remote"
+    # the tripwire works: a bare call is logged (and would fail the case)
+    sh -c 'open x' 2>/dev/null
+    assert_log_contains "tripwire open x"
+    grep -v '^tripwire open x$' "$STUB_LOG" > "$T/log.tmp"; cat "$T/log.tmp" > "$STUB_LOG"
+    assert_file "$T/tripwire" "open x"
+    rm -f "$T/tripwire"
+}
+
+# A fresh install (no session has a key dir yet): gc finds nothing to offer
+# and exits 0. own_filter's loop must not fail when its glob matches nothing.
+case_gc_no_own_sessions_yet() {
+    orphan_sessions
+    rm -rf "$STATE/sessions"
+    run gc --dry-run
+    assert_rc 0
+    ! grep -q "min ls failed" "$T/err" || fail "gc died: $(cat "$T/err")"
+}
+
+CASES="
+gc_no_own_sessions_yet open_activates_and_launches_editor open_reuses_live_session_for_path open_needs_ssh_config
+open_rejects_non_directory_and_bad_name open_name_for_other_dir new_always_activates
+attach_launches_existing attach_picker_rejects_zero open_without_editor_fails_after_prepare open_editor_falls_back_to_app
+names_from_min
+destroy_asks_and_cleans_up destroy_by_cwd in_use_reads_ps gc_lists_oldest_first_and_asks
+gc_offers_only_own_sessions status_tracks_orphans status_table
+settings_untouched_before_opt_in settings_follow_sessions settings_sync_skipped_when_min_ls_fails
+config_print_and_bad_option config_and_doctor_keep_entries_when_min_ls_fails merger_remove_restores_framing merger_fresh_file_and_noop merger_keeps_users_local_server
+merger_symlink_written_through merger_preserves_foreign_entries_vscode_put_in_block
+merger_moves_foreign_keys_out_of_block merger_upgrades_old_block merger_bad_jsonc_left_alone doctor_rows doctor_min_version
+new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes
+loadout_rc_line_once
+sshconfig_install_creates_include_and_stanza sshconfig_remove_restores_original
+sshconfig_coexists_with_another_tool sshconfig_keeps_symlinked_config sshconfig_print_touches_nothing
+sshconfig_destroy_drops_stanza sshconfig_stale_and_invalid_dirs_skipped sshconfig_real_ssh_resolves
+sshconfig_forwarding_off_despite_host_star forwarding_off_on_ssh_path sshconfig_paths_with_spaces_and_percent
+sshconfig_prefers_local_bin_symlink sshconfig_refuses_double_quote_in_state_dir
+sshconfig_write_failure_does_not_block_ssh sshconfig_min_ls_failure_keeps_stanzas
+sshconfig_unchanged_conf_not_rewritten sshconfig_remove_deletes_what_it_created sshconfig_backs_up_before_writing
+proxy_prepares_then_execs_sshd proxy_never_touches_settings_or_editor proxy_failures
+proxy_missing_takes_no_host proxy_log_capped_and_private
+proxy_prepare_write_failure prepare_writes_atomically prepare_rejects_bad_facts prepare_accepts_valid_facts
+prepare_errors_strip_control_bytes stored_user_checked_on_read proxy_rechecks_stored_paths
+prep_extracts_and_prints_facts
+prep_waiter_keeps_lock_it_does_not_own prep_breaks_stale_lock prep_concurrent_runs_agree_on_host_key
+prep_regenerates_half_pair prep_keygen_failure_releases_lock prep_stale_lock_stress
+open_default_loadouts_toml_forms sshconfig_lock_held_waits_then_fails
+sshconfig_two_tools_install_at_once gc_rechecks_before_each_question bad_session_name_refused
+completions_parse sessions_lists_names usage sshconfig_two_tools_coexist open_keeps_default_loadouts safety_gui_commands_absolute
+"
+
+# Nothing under ~/.ssh unless the case opted in to ssh-config.
+ssh_untouched() {
+    case $1 in sshconfig_*|open_*|new_*|attach_*|names_*|destroy_asks*|settings_*|config_*|doctor_*|setup_*|proxy_never*|prepare_rejects*|prepare_accepts*|stored_user*|safety_*|bad_session*) return 0 ;; esac
+    [ ! -e "$T/home/.ssh" ] || fail "HOME/.ssh touched: $(find "$T/home/.ssh" | tr '\n' ' ')"
+}
+
+pass=0 failed=0 skipped=0
+for c in ${ONLY:-$CASES}; do
+    ( setup; CASE=$c; command -v "case_$c" >/dev/null || fail "no function case_$c"; "case_$c"; ssh_untouched "$CASE"
+      [ ! -e "$T/tripwire" ] || fail "tripwire: $(cat "$T/tripwire")"
+      ! grep -q '^tripwire ' "$STUB_LOG" || fail "bare GUI command: $(grep '^tripwire ' "$STUB_LOG")"; [ ! -e "$T/fail" ] || exit 1; [ ! -e "$T/skip" ] || exit 2 )
+    case $? in
+        0) echo "ok - $c"; pass=$((pass + 1)) ;;
+        2) echo "ok - $c # skip"; skipped=$((skipped + 1)) ;;
+        *) echo "not ok - $c"; failed=$((failed + 1)) ;;
+    esac
+done
+echo "# ${LONG_PREFIX:+long prefix: }$pass passed, $failed failed, $skipped skipped"
+[ "$failed" -eq 0 ]

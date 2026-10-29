@@ -1,0 +1,33 @@
+name: Bug report
+description: min-vscode is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: textarea
+    id: doctor
+    attributes:
+      label: min-vscode doctor
+      description: Output of `min-vscode doctor`, run on the host.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: code-version
+    attributes:
+      label: VS Code version
+      placeholder: code --version
+    validations:
+      required: true
+  - type: input
+    id: min-version
+    attributes:
+      label: min version
+      placeholder: min version
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you saw. The Remote-SSH output panel, `~/.local/state/min-vscode/proxy.log` and `watch.log` often help.
+    validations:
+      required: true

@@ -1,0 +1,107 @@
+{
+  "name": "min-vscode",
+  "displayName": "Minimal Boxes",
+  "description": "Create, reopen and tidy Minimal boxes (min microVMs) from VS Code, over Remote-SSH.",
+  "version": "0.2.0",
+  "publisher": "minimal",
+  "icon": "media/icon.png",
+  "galleryBanner": { "color": "#171717", "theme": "dark" },
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/norrietaylor/vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "minimal",
+          "title": "Minimal",
+          "icon": "media/minimal.svg"
+        }
+      ]
+    },
+    "views": {
+      "minimal": [
+        {
+          "id": "minimal.boxes",
+          "name": "Boxes"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "minimal.boxes",
+        "contents": "Minimal runs each box in its own microVM and opens it here over Remote-SSH.\n[Set up Minimal boxes](command:minimal.setup)\nSet up adds one Include line to ~/.ssh/config and a marked block to VS Code's settings.json and Minimal's skills to ~/.copilot/skills and ~/.claude/skills; Remove Setup takes them out.",
+        "when": "!minimal.setUp"
+      },
+      {
+        "view": "minimal.boxes",
+        "contents": "No boxes yet.\n[New Box from Folder…](command:minimal.newFromFolder)\n[New Empty Box](command:minimal.newEmpty)",
+        "when": "minimal.setUp"
+      }
+    ],
+    "commands": [
+      { "command": "minimal.setup", "title": "Set Up", "category": "Minimal" },
+      { "command": "minimal.removeSetup", "title": "Remove Setup", "category": "Minimal" },
+      { "command": "minimal.newFromFolder", "title": "New Box from Folder…", "category": "Minimal", "icon": "$(new-folder)" },
+      { "command": "minimal.newEmpty", "title": "New Empty Box", "category": "Minimal", "icon": "$(add)" },
+      { "command": "minimal.open", "title": "Open Box…", "category": "Minimal", "icon": "$(remote)" },
+      { "command": "minimal.openNewWindow", "title": "Open Box in New Window…", "category": "Minimal", "icon": "$(empty-window)" },
+      { "command": "minimal.destroy", "title": "Destroy Box…", "category": "Minimal", "icon": "$(trash)" },
+      { "command": "minimal.cleanUp", "title": "Clean Up Idle Boxes…", "category": "Minimal", "icon": "$(clear-all)" },
+      { "command": "minimal.refresh", "title": "Refresh", "category": "Minimal", "icon": "$(refresh)" },
+      { "command": "minimal.doctor", "title": "Run Doctor", "category": "Minimal" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "minimal.newFromFolder", "when": "view == minimal.boxes && minimal.setUp", "group": "navigation@1" },
+        { "command": "minimal.newEmpty", "when": "view == minimal.boxes && minimal.setUp", "group": "navigation@2" },
+        { "command": "minimal.refresh", "when": "view == minimal.boxes && minimal.setUp", "group": "navigation@3" },
+        { "command": "minimal.cleanUp", "when": "view == minimal.boxes && minimal.setUp", "group": "1_tidy" },
+        { "command": "minimal.doctor", "when": "view == minimal.boxes", "group": "2_setup@1" },
+        { "command": "minimal.removeSetup", "when": "view == minimal.boxes && minimal.setUp", "group": "2_setup@2" }
+      ],
+      "view/item/context": [
+        { "command": "minimal.openNewWindow", "when": "view == minimal.boxes && viewItem == box", "group": "inline" },
+        { "command": "minimal.open", "when": "view == minimal.boxes && viewItem == box", "group": "1_open@1" },
+        { "command": "minimal.openNewWindow", "when": "view == minimal.boxes && viewItem == box", "group": "1_open@2" },
+        { "command": "minimal.destroy", "when": "view == minimal.boxes && viewItem == box", "group": "9_destroy" }
+      ],
+      "explorer/context": [
+        { "command": "minimal.newFromFolder", "when": "explorerResourceIsFolder && resourceScheme == file && minimal.setUp", "group": "z_minimal" }
+      ],
+      "commandPalette": [
+        { "command": "minimal.newFromFolder", "when": "minimal.setUp" },
+        { "command": "minimal.newEmpty", "when": "minimal.setUp" },
+        { "command": "minimal.open", "when": "minimal.setUp" },
+        { "command": "minimal.openNewWindow", "when": "minimal.setUp" },
+        { "command": "minimal.destroy", "when": "minimal.setUp" },
+        { "command": "minimal.cleanUp", "when": "minimal.setUp" },
+        { "command": "minimal.removeSetup", "when": "minimal.setUp" },
+        { "command": "minimal.refresh", "when": "false" }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "check": "tsc -p . --noEmit",
+    "package": "vsce package --no-dependencies -o ../min-vscode.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "3.2.1",
+    "typescript": "5.6.3"
+  }
+}

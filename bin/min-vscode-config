@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""Keep min-vscode's remote.SSH settings in VS Code's user settings.json.
+
+settings.json is JSONC (comments, trailing commas) and VS Code edits it
+itself, so it is never rewritten from a parsed object. Two edits, both
+textual:
+
+  * a marked block right after the opening brace, between `// min-vscode:begin`
+    and `// min-vscode:end` lines, holding the keys the user does not already
+    have: `remote.SSH.useLocalServer` (false: one ssh per window, so the
+    in-use check sees each window's connection) and
+    `remote.SSH.remotePlatform`. Anything else found inside the block (VS
+    Code appends new settings after the last property, which can be ours; a
+    useLocalServer the user changed there) is the user's: it is moved out,
+    after the block, and kept by `--remove`. A 0.1.0 block (ending in a
+    `/* min-vscode:end */` comment) is read and rewritten in this form;
+  * when the user already has `remote.SSH.remotePlatform` outside the block
+    (VS Code writes it when you pick a platform for any host), only that
+    object's value is replaced, keeping every entry whose host does not start
+    with our prefix. A useLocalServer of the user's is never overridden.
+
+VS Code's Remote-SSH (ms-vscode-remote.remote-ssh) looks a host up in
+`remote.SSH.remotePlatform` by its exact name (no wildcard keys,
+microsoft/vscode-remote-release#8065), so there is one
+`"min-vscode.NAME": "linux"` entry per live session, refreshed by
+`--sync NAME...` (from open, attach, ssh, destroy, gc). `--sync` is
+a no-op until `--install` has run (the opt-in record is
+STATE/settings-installed); `--remove` takes everything out again.
+
+Before a write the old file is copied to STATE/backups/settings.json.<time>;
+the file is written through a symlink (dotfiles) and replaced atomically. A
+change that leaves the effective settings equal is never written.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+import time
+
+# ---- client constants ----
+TOOL = "min-vscode"
+HOST_PREFIX = "min-vscode."
+EDITOR_NAME = "VS Code"
+SETTINGS_DEFAULT = os.path.expanduser("~/Library/Application Support/Code/User/settings.json")
+ENV_SETTINGS = "MIN_VSCODE_SETTINGS"
+ENV_STATE = "MIN_VSCODE_STATE_DIR"
+
+BEGIN = f"// {TOOL}:begin"
+END = f"// {TOOL}:end"
+# On the END line when the opening brace was not followed by a line break:
+# --remove then takes the break it added before BEGIN out too.
+JOINED = "(joined)"
+# min-vscode 0.1.0 ended its block with this comment, mid-line, right before
+# the file's own text: still read (and cut exactly), rewritten in the new form.
+OLD_END = f"/* {TOOL}:end */"
+K_PLATFORM = "remote.SSH.remotePlatform"
+K_LOCAL = "remote.SSH.useLocalServer"
+LOCAL_VALUE = False
+OUR_KEYS = (K_PLATFORM, K_LOCAL)
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def strip_jsonc(text):
+    """Comments blanked to spaces and trailing commas dropped, offsets kept.
+
+    Returns (json_text, index of the first top-level brace)."""
+    out = []
+    i, n = 0, len(text)
+    first_brace = -1
+    last_comma = -1
+
+    def blank(s):
+        return "".join(c if c in "\r\n" else " " for c in s)
+
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            out.append(text[i : j + 1])
+            i = j + 1
+            last_comma = -1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(blank(text[i:j]))
+            i = j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(blank(text[i:j]))
+            i = j
+            continue
+        if c == "{" and first_brace < 0:
+            first_brace = i
+        if c == ",":
+            last_comma = len(out)
+        elif c in "}]" and last_comma >= 0:
+            out[last_comma] = " "
+            last_comma = -1
+        elif not c.isspace():
+            last_comma = -1
+        out.append(c)
+        i += 1
+    return "".join(out), first_brace
+
+
+def load_jsonc(text):
+    stripped, brace = strip_jsonc(text)
+    if not stripped.strip():
+        return {}, -1
+    return json.loads(stripped), brace
+
+
+def top_level_value_span(text, key):
+    """(start, end) of the value of top-level `key` in JSONC text, or None.
+
+    The last occurrence wins, as it does for json.loads and VS Code."""
+    s, brace = strip_jsonc(text)
+    if brace < 0:
+        return None
+    depth, i, n, found = 0, brace, len(s), None
+    while i < n:
+        c = s[i]
+        if c == '"':
+            j = i + 1
+            while j < n and s[j] != '"':
+                j += 2 if s[j] == "\\" else 1
+            if depth == 1:
+                k = j + 1
+                while k < n and s[k].isspace():
+                    k += 1
+                if k < n and s[k] == ":" and json.loads(s[i : j + 1]) == key:
+                    v = k + 1
+                    while v < n and s[v].isspace():
+                        v += 1
+                    found = (v, value_end(s, v))
+            i = j + 1
+            continue
+        if c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+        i += 1
+    return found
+
+
+def value_end(s, v):
+    """Index just past the JSON value starting at s[v] (s already stripped)."""
+    if s[v] == '"':
+        j = v + 1
+        while s[j] != '"':
+            j += 2 if s[j] == "\\" else 1
+        return j + 1
+    if s[v] in "{[":
+        depth, j = 0, v
+        while j < len(s):
+            c = s[j]
+            if c == '"':
+                j += 1
+                while s[j] != '"':
+                    j += 2 if s[j] == "\\" else 1
+            elif c in "{[":
+                depth += 1
+            elif c in "}]":
+                depth -= 1
+                if depth == 0:
+                    return j + 1
+            j += 1
+        raise ValueError("unterminated value")
+    j = v
+    while j < len(s) and s[j] not in ",}] \t\r\n":
+        j += 1
+    return j
+
+
+def block_span(text):
+    """(line_start, line_end) of our marked block, or None."""
+    b = text.find(BEGIN)
+    o = text.find(OLD_END, b + 1) if b >= 0 else -1
+    if o >= 0:
+        # 0.1.0: from the line break it put after the brace through the comment
+        start = text.rfind("\n", 0, b)
+        if start < 0 or text[start + 1 : b].strip(" \t"):
+            start = b
+        elif start > 0 and text[start - 1] == "\r":
+            start -= 1
+        return start, o + len(OLD_END)
+    e = text.find(END)
+    if b < 0 or e < 0 or e < b:
+        return None
+    line_start = text.rfind("\n", 0, b) + 1
+    line_end = text.find("\n", e)
+    line_end = len(text) if line_end < 0 else line_end + 1
+    if text[e + len(END) : line_end].strip().startswith(JOINED) and line_start > 0:
+        line_start -= 1
+        if line_start > 0 and text[line_start - 1] == "\r":
+            line_start -= 1
+    return line_start, line_end
+
+
+def ours(host):
+    return isinstance(host, str) and host.startswith(HOST_PREFIX)
+
+
+def indent_json(value, pad, nl="\n"):
+    return json.dumps(value, indent=2, ensure_ascii=False).replace("\n", nl + pad)
+
+
+def body(keys, nl):
+    return ("," + nl).join(f"  {json.dumps(k)}: {indent_json(v, '  ', nl)}" for k, v in keys.items())
+
+
+def plan(text, hosts, remove):
+    """The new settings text for `hosts` (or with everything of ours removed).
+
+    hosts None keeps our entries as they are (min ls failed: a partial list
+    must not prune). The file's line ending is kept for what we insert. An
+    existing remotePlatform object we rewrite is re-indented as JSON. Keys
+    that are the user's (any found inside the block but ours as written,
+    foreign hosts left at --remove) are written unmarked, after the block."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    span = block_span(text)
+    block_cfg = {}
+    if span:
+        inner = text[span[0] : span[1]]
+        try:
+            block_cfg, _ = load_jsonc("{\n" + inner + "\n}")
+        except ValueError:
+            block_cfg = None
+        if not isinstance(block_cfg, dict):
+            sys.exit(f"{TOOL}-config: cannot read the {BEGIN} block; fix it by hand")
+        base_text = text[: span[0]] + text[span[1] :]
+    else:
+        base_text = text
+    # Keys in our block other than ours as we wrote them are the user's (VS
+    # Code appends a new setting after the last property, which can be ours;
+    # a useLocalServer changed in place): moved out, never refused or removed.
+    moved = {k: v for k, v in block_cfg.items()
+             if not ((k == K_LOCAL and v == LOCAL_VALUE) or (k == K_PLATFORM and isinstance(v, dict)))}
+    if K_PLATFORM in moved:
+        sys.exit(f"{TOOL}-config: {K_PLATFORM} in the {BEGIN} block is not an object; fix it by hand")
+    if not base_text.strip():
+        base_text = "{" + nl + "}" + nl
+    base, brace = load_jsonc(base_text)
+    if not isinstance(base, dict) or brace < 0:
+        sys.exit(f"{TOOL}-config: settings top level is not an object; fix it by hand")
+
+    # Every remotePlatform entry that is not ours, from the block and outside it.
+    foreign, mine = {}, {}
+    for src in (block_cfg.get(K_PLATFORM), base.get(K_PLATFORM)):
+        if isinstance(src, dict):
+            foreign.update({h: p for h, p in src.items() if not ours(h)})
+            mine.update({h: p for h, p in src.items() if ours(h)})
+    want = dict(foreign)
+    if not remove:
+        want.update(mine if hosts is None else {HOST_PREFIX + h: "linux" for h in sorted(set(hosts))})
+
+    out = base_text
+    block = {}
+    if K_PLATFORM in base:
+        vs, ve = top_level_value_span(out, K_PLATFORM)
+        if base[K_PLATFORM] != want:
+            line = out.rfind("\n", 0, vs) + 1
+            pad = re.match(r"[ \t]*", out[line:vs]).group(0)
+            out = out[:vs] + indent_json(want, pad, nl) + out[ve:]
+    elif want and remove:
+        moved[K_PLATFORM] = want  # only foreign entries left from our block: the user's now
+    elif want:
+        block[K_PLATFORM] = want
+    if not remove and K_LOCAL not in base and K_LOCAL not in moved:
+        block[K_LOCAL] = LOCAL_VALUE
+
+    if block or moved:
+        rest, brace = load_jsonc(out)
+        head, tail = out[: brace + 1], out[brace + 1 :]
+        joined = not tail.startswith(nl)
+        if joined:
+            tail = nl + tail
+        ins = f"{nl}{body(moved, nl)}{',' if rest else ''}" if moved else ""
+        if block:
+            note = f"(managed by `{TOOL} config`; `{TOOL} config --remove` removes it)"
+            end = f"{END} {JOINED}" if joined else END
+            ins = f"{nl}  {BEGIN} {note}{nl}{body(block, nl)}{',' if (moved or rest) else ''}{nl}  {end}{ins}"
+        out = head + ins + tail
+    return out
+
+
+def write(path, state, text):
+    real = os.path.realpath(path)
+    d = os.path.dirname(real) or "."
+    backup = None
+    if os.path.exists(real):
+        bdir = os.path.join(state, "backups") if state else d
+        os.makedirs(bdir, mode=0o700, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        backup = os.path.join(bdir, f"settings.json.{stamp}")
+        i = 1
+        while os.path.exists(backup):
+            backup = os.path.join(bdir, f"settings.json.{stamp}.{i}")
+            i += 1
+        shutil.copy2(real, backup)
+        os.chmod(backup, 0o600)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".settings.json.", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        if os.path.exists(real):
+            shutil.copymode(real, tmp)
+        else:
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, real)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return backup
+
+
+def doctor(path, state, hosts):
+    def row(level, msg, fix=""):
+        print("\t".join([level, msg] + ([fix] if fix else [])))
+
+    installed = bool(state) and os.path.exists(os.path.join(state, "settings-installed"))
+    if not installed:
+        return row("warn", f"not installed; {EDITOR_NAME} asks for each box's platform", f"{TOOL} config")
+    if not os.path.exists(path):
+        return row("FAIL", f"{path} missing", f"{TOOL} config")
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            cfg, _ = load_jsonc(f.read())
+    except ValueError as e:
+        return row("FAIL", f"{path} is not valid JSONC ({e})", "fix the syntax by hand")
+    if not isinstance(cfg, dict):
+        return row("FAIL", f"{path}: top level is not an object", "fix it by hand")
+    rp = cfg.get(K_PLATFORM) if isinstance(cfg.get(K_PLATFORM), dict) else {}
+    missing = sorted(h for h in set(hosts) if rp.get(HOST_PREFIX + h) != "linux")
+    stale = sorted(h[len(HOST_PREFIX):] for h in rp if ours(h) and h[len(HOST_PREFIX):] not in hosts)
+    if missing or stale:
+        row("warn", f"{K_PLATFORM} out of date (missing: {' '.join(missing) or '-'}; stale: {' '.join(stale) or '-'})",
+            f"{TOOL} config")
+    else:
+        row("ok", f"{K_PLATFORM}: {len(hosts)} {HOST_PREFIX}* host(s)")
+    if K_LOCAL in cfg and cfg[K_LOCAL] != LOCAL_VALUE:
+        row("ok", f"{K_LOCAL} is {json.dumps(cfg[K_LOCAL])} (yours; left alone)")
+
+
+def main():
+    global HOST_PREFIX
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--settings", default=os.environ.get(ENV_SETTINGS) or SETTINGS_DEFAULT)
+    ap.add_argument("--state", default=os.environ.get(ENV_STATE, ""))
+    ap.add_argument("--prefix", default=HOST_PREFIX)
+    ap.add_argument("--install", action="store_true", help="opt in, then sync")
+    ap.add_argument("--remove", action="store_true", help="take every entry of ours out; opt out")
+    ap.add_argument("--sync", nargs="*", metavar="NAME", help="the live session names")
+    ap.add_argument("--doctor", nargs="*", metavar="NAME", help="report on the settings; write nothing")
+    ap.add_argument("--dry-run", action="store_true", help="print the resulting file; write nothing")
+    a = ap.parse_args()
+    HOST_PREFIX = a.prefix
+
+    if a.doctor is not None:
+        return doctor(a.settings, a.state, [h for h in a.doctor if NAME_RE.match(h)])
+    # no --sync: the live list is unknown (min ls failed); keep our entries
+    hosts = None if a.sync is None else [h for h in a.sync if NAME_RE.match(h)]
+    marker = os.path.join(a.state, "settings-installed") if a.state else None
+    if not (a.install or a.remove or a.dry_run) and not (marker and os.path.exists(marker)):
+        return  # --sync before the opt-in: touch nothing
+
+    exists = os.path.exists(a.settings)
+    text = ""
+    if exists:
+        # newline="": CRLF files keep their line endings byte for byte
+        with open(a.settings, encoding="utf-8", newline="") as f:
+            text = f.read()
+    bom = text.startswith("\ufeff")
+    if bom:
+        text = text[1:]
+    try:
+        current, _ = load_jsonc(text)
+    except ValueError as e:
+        sys.exit(f"{a.settings}: cannot parse as JSONC ({e}); fix it by hand")
+    if not isinstance(current, dict):
+        sys.exit(f"{a.settings}: top level is not an object; fix it by hand")
+
+    target = plan(text, hosts, a.remove)
+    result, _ = load_jsonc(target)
+    if a.dry_run:
+        sys.stdout.write(target)
+        return
+    out_text = ("\ufeff" if bom else "") + target
+    created = os.path.join(a.state, "settings-created") if a.state else None
+    if a.install and marker:
+        os.makedirs(a.state, exist_ok=True)
+        open(marker, "w").close()
+        if not exists:
+            open(created, "w").close()  # so --remove may delete the file again
+    if a.remove:
+        for f in (marker, created):
+            if f and os.path.exists(f):
+                os.unlink(f)
+                if f == created and exists and result == {} and not os.path.islink(a.settings):
+                    os.unlink(a.settings)
+                    print(f"removed {a.settings}, which {TOOL} created and is empty again")
+                    return
+    if (exists and result == current and target.count(BEGIN) == text.count(BEGIN) and OLD_END not in text) or (not exists and a.remove):
+        print(f"{a.settings}: already {'clean' if a.remove else 'up to date'}; nothing to do")
+        return
+    backup = write(a.settings, a.state, out_text)
+    verb = f"removed {TOOL} entries from" if a.remove else "updated"
+    print(f"{verb} {a.settings}" + (f" (previous version: {backup})" if backup else ""))
+
+
+if __name__ == "__main__":
+    main()

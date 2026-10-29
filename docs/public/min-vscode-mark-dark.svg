@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -5 87 34" width="348" height="136" role="img" aria-label="min-vscode">
+  <title>min-vscode</title>
+  <!-- dark mark, for light backgrounds. Minimal glyph, and a pair of code chevrons in a box -->
+  <path fill="#0a0a0a" d="M10.2734 0H18.1767L29.2412 16V24H21.338L10.2734 8V0ZM3.16132 24L0 19.4285V11.4286H7.90326L11.0645 16V24H3.16132ZM28.4531 0H36.3564L47.4208 16V24H39.5176L28.4531 8V0Z"/>
+  <rect x="55" y="-3.9" width="30.5" height="31.8" rx="4.5" fill="none" stroke="#0a0a0a" stroke-width="2.2"/>
+  <path fill="none" stroke="#0b6fb8" stroke-width="3.2" stroke-linecap="square" stroke-linejoin="miter" d="M66 3L60 12L66 21M74.5 3L80.5 12L74.5 21"/>
+</svg>
