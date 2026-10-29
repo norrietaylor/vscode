@@ -550,15 +550,16 @@ valid_name() {
 }
 
 # pick_session CMD: numbered picker of own sessions on the terminal; prints the
-# chosen name.
+# chosen name, read from the same list it showed.
 pick_session() {
     [ -t 0 ] || die "$1: NAME required when stdin is not a terminal"
-    own_ls | jq -r '.sessions[] | [.name, .status, (.project_path // "")] | @tsv' \
+    ps_l=$(own_ls) || die "min ls failed"
+    printf '%s' "$ps_l" | jq -r '.sessions[] | [.name, .status, (.project_path // "")] | @tsv' \
         | awk -F'\t' '{ printf "%2d) %-28s %-13s %s\n", NR, $1, $2, $3 }' >&2
     printf 'session number: ' >&2
     read -r n
     case $n in ''|*[!0-9]*|0) die "no such entry" ;; esac
-    pn=$(own_ls | jq -r --argjson n "$n" '.sessions[$n - 1].name // empty') \
+    pn=$(printf '%s' "$ps_l" | jq -r --argjson n "$n" '.sessions[$n - 1].name // empty') \
         || die "no such entry"
     [ -n "$pn" ] || die "no such entry"
     valid_name "$pn" || die "session name is not lowercase letters, digits and dashes; not using it: $(printf '%s' "$pn" | LC_ALL=C tr -c '[:print:]' '?')"

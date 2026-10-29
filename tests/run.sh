@@ -288,6 +288,44 @@ case_attach_picker_rejects_zero() {
     assert_err_contains "attach: NAME required when stdin is not a terminal"
 }
 
+# The picker resolves the number from the list it showed: a session that
+# becomes own while it waits (another terminal's attach) shifts nothing.
+case_attach_picker_uses_shown_list() {
+    installed
+    own alpha
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"ID-F","name":"foreign","project_path":"$P","status":"active"},
+ {"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"}]}
+JSON
+    reset_log
+    python3 - "$BIN" "$STATE/sessions/foreign" > "$T/out" 2> "$T/err" <<'PY'
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("sh", ["sh", sys.argv[1], "attach"])
+def read():
+    try: return os.read(fd, 1024)
+    except OSError: return b""
+buf = b""
+while b"session number: " not in buf:
+    b = read()
+    if not b: break
+    buf += b
+os.makedirs(sys.argv[2])
+os.write(fd, b"1\n")
+while True:
+    b = read()
+    if not b: break
+    buf += b
+sys.stdout.write(buf.decode(errors="replace"))
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+PY
+    RC=$?
+    assert_rc 0
+    assert_log_contains "min session exec alpha sh -c <script>"
+    assert_log_not_contains "min session exec foreign"
+}
+
 case_open_without_editor_fails_after_prepare() {
     installed
     MIN_VSCODE_EDITOR_BIN=$T/no-code run attach alpha
@@ -1673,7 +1711,7 @@ CASES="
 gc_no_own_sessions_yet open_activates_and_launches_editor open_reuses_live_session_for_path open_skips_foreign_session_for_path
 open_needs_ssh_config
 open_rejects_non_directory_and_bad_name open_name_for_other_dir new_always_activates
-attach_launches_existing attach_picker_rejects_zero open_without_editor_fails_after_prepare open_editor_falls_back_to_app
+attach_launches_existing attach_picker_rejects_zero attach_picker_uses_shown_list open_without_editor_fails_after_prepare open_editor_falls_back_to_app
 names_from_min
 destroy_asks_and_cleans_up destroy_by_cwd destroy_by_cwd_only_own in_use_reads_ps gc_lists_oldest_first_and_asks
 gc_offers_only_own_sessions status_tracks_orphans status_table
