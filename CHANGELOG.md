@@ -8,9 +8,9 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - Terminals in a box print Minimal's banner (session, loadouts, `min init`
-  pointer) once per interactive shell: `~/.ssh/environment` keeps
-  `MINIMAL_MOTD` (still not `PROMPT_COMMAND`), and a `min:motd` rc line
-  prints it.
+  pointer) once per terminal: `~/.ssh/environment` keeps `MINIMAL_MOTD`
+  (still not `PROMPT_COMMAND`), and a `min:motd` rc line prints it in an
+  interactive shell on a terminal, then unsets it.
 
 ### Fixed
 

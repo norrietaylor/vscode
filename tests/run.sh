@@ -1152,22 +1152,32 @@ case_loadout_rc_line_once() {
     assert_file_not_contains "$B/.ssh/environment" "PROMPT_COMMAND="
 }
 
+# on_tty CMD...: run CMD with a terminal on stdout, via script(1) (util-linux
+# or BSD form).
+on_tty() {
+    if script -qec true /dev/null >/dev/null 2>&1; then script -qec "$*" /dev/null < /dev/null
+    else script -q /dev/null "$@" < /dev/null; fi
+}
+
 # The min:motd rc line from either writer, in each shell there is: an
-# interactive shell runs the banner with the ssh detach hint and unsets it; the
-# box's own banner (`[ -t 1 ]`) prints nothing when stdout is no terminal.
+# interactive shell on a terminal runs the banner with the ssh detach hint and
+# unsets it; one with no terminal (VS Code's shell-env probe) prints nothing
+# and leaves MINIMAL_MOTD for later terminals.
 # shellcheck disable=SC2016  # literal on purpose
 case_motd_rc_line_shells() {
+    MOTD='echo "motd: $MINIMAL_DETACH_HINT"'
     for w in loadout prep; do
         B=$T/rc-$w; mkdir -p "$B"
         if [ $w = loadout ]; then HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
         else HOME=$B sh -c "$(prep_script)" "$TOOL" "ssh-ed25519 AAAAUSER user" > /dev/null 2>&1 < /dev/null; fi
+        printf '%s\n' 'cd "$HOME" && exec "$1" -i -c '"'"'echo "after: ${MINIMAL_MOTD-unset}"'"'" > "$B/t.sh"
         for sh in bash zsh; do
             command -v $sh >/dev/null || continue
-            out=$(cd "$B" && HOME=$B MINIMAL_MOTD='echo "motd: $MINIMAL_DETACH_HINT"' $sh -i -c 'echo "after: ${MINIMAL_MOTD-unset}"' 2>/dev/null < /dev/null)
-            [ "$out" = "motd: close the terminal
-after: unset" ] || fail "$w $sh -i: $out"
-            out=$(cd "$B" && HOME=$B MINIMAL_MOTD='[ -t 1 ] && echo banner' $sh -i -c 'echo "after: ${MINIMAL_MOTD-unset}"' 2>/dev/null < /dev/null)
-            [ "$out" = "after: unset" ] || fail "$w $sh -i, no tty: $out"
+            out=$(HOME=$B MINIMAL_MOTD=$MOTD sh "$B/t.sh" $sh 2>/dev/null < /dev/null)
+            [ "$out" = "after: $MOTD" ] || fail "$w $sh -i, no tty: $out"
+            command -v script >/dev/null || { skip "no script(1) for a terminal"; continue; }
+            out=$(HOME=$B MINIMAL_MOTD=$MOTD on_tty sh "$B/t.sh" $sh 2>/dev/null | tr -d '\r')
+            case $out in *"motd: close the terminal"*"after: unset"*) ;; *) fail "$w $sh -i on a tty: $out" ;; esac
         done
     done
 }
