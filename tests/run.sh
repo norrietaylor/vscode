@@ -1213,6 +1213,24 @@ case_motd_rc_line_on_tty() {
     done
 }
 
+# An rc file with `set -e` before the line: a banner that fails (or does not
+# parse) leaves the shell running, not exited at its first prompt.
+case_motd_rc_line_survives_errexit() {
+    command -v script >/dev/null 2>&1 || return 0
+    B=$T/box; mkdir -p "$B"
+    for f in "$B/.bashrc" "$B/.zshrc"; do printf '%s\n' 'set -e' > "$f"; done
+    HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+    for sh in bash zsh; do
+        command -v $sh >/dev/null 2>&1 || continue
+        # shellcheck disable=SC2016 # literal on purpose
+        c="$sh"' -i -c '\''echo "[${MINIMAL_MOTD-unset}]"'\'
+        for m in false if; do
+            HOME=$B ZDOTDIR=$B SSH_CONNECTION='10.0.0.1 1 10.0.0.2 22' MINIMAL_MOTD=$m on_tty "$c" > "$T/o.$sh"
+            [ "$(cat "$T/o.$sh")" = "[unset]" ] || fail "$sh -i under set -e, MINIMAL_MOTD=$m, printed: $(cat "$T/o.$sh")"
+        done
+    done
+}
+
 # A `min session attach` shell (a terminal, minimald's PROMPT_COMMAND and
 # detach hint, no SSH_CONNECTION) is left alone: minimald prints the banner
 # there with the real detach chord.
@@ -1981,7 +1999,7 @@ config_print_and_bad_option config_and_doctor_keep_entries_when_min_ls_fails mer
 merger_symlink_written_through merger_preserves_foreign_entries_vscode_put_in_block
 merger_moves_foreign_keys_out_of_block merger_upgrades_old_block merger_bad_jsonc_left_alone doctor_rows doctor_min_version
 new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes setup_remove_stops_when_config_refuses setup_through_link setup_shares_skills_with_other_tools
-loadout_rc_line_once loadout_env_keeps_motd prep_and_loadout_rc_lines_agree motd_rc_line_quiet_without_tty motd_rc_line_on_tty motd_rc_line_skips_attach_shell motd_rc_line_replaces_older
+loadout_rc_line_once loadout_env_keeps_motd prep_and_loadout_rc_lines_agree motd_rc_line_quiet_without_tty motd_rc_line_on_tty motd_rc_line_survives_errexit motd_rc_line_skips_attach_shell motd_rc_line_replaces_older
 sshconfig_install_creates_include_and_stanza sshconfig_remove_restores_original
 sshconfig_coexists_with_another_tool sshconfig_keeps_symlinked_config sshconfig_print_touches_nothing
 sshconfig_destroy_drops_stanza sshconfig_stale_and_invalid_dirs_skipped sshconfig_real_ssh_resolves

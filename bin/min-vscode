@@ -161,7 +161,7 @@ done
 printf "%s\n" "$1" > "$a/authorized_keys.$$" && mv -f "$a/authorized_keys.$$" "$a/authorized_keys"
 env | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$s/environment.$$" || true
 mv -f "$s/environment.$$" "$s/environment"
-motd="case \$- in *i*) if [ -n \"\${SSH_CONNECTION:-}\" ] && [ -t 1 ] && [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"exit or close the terminal\"; eval \"\$MINIMAL_MOTD\" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac"
+motd="case \$- in *i*) if [ -n \"\${SSH_CONNECTION:-}\" ] && [ -t 1 ] && [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"exit or close the terminal\"; eval \"\$MINIMAL_MOTD\" 2>/dev/null || true; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   grep -qs "min:workbench" "$rc" || printf "%s\n" "# min:workbench (managed by $0)" "case \$- in *i*) if [ \"\$PWD\" = \"\$HOME\" ] && [ -d /workbench ]; then cd /workbench; fi ;; esac" >> "$rc"
   if ! grep -qsF -- "$motd" "$rc"; then
