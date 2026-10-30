@@ -47,6 +47,8 @@ patches = [
 # then prints the box's banner in an interactive shell on a terminal and unsets
 # MINIMAL_MOTD so nested shells stay quiet; a shell with no terminal (VS Code's
 # shell-environment probe) prints nothing and leaves it for later terminals.
+# Its errors go to /dev/null: ~/.ssh/environment keeps only the first line of
+# a multi-line MINIMAL_MOTD (a user loadout's), which would not parse.
 #
 # Guarded: a failure here must not abort the activation. Commands that do not
 # need stdin get </dev/null: the script itself arrives on the shell's stdin.
@@ -64,7 +66,7 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   fi
   if ! grep -qs "min:motd" "$rc" </dev/null; then
     printf '%s\n' '# min:motd (managed by min-vscode)' \
-      'case $- in *i*) if [ -t 1 ] && [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="close the terminal"; eval "$MINIMAL_MOTD"; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac' >> "$rc" </dev/null || true
+      'case $- in *i*) if [ -t 1 ] && [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="close the terminal"; eval "$MINIMAL_MOTD" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac' >> "$rc" </dev/null || true
   fi
 done
 # bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc.

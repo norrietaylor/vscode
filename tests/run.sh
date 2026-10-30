@@ -1162,7 +1162,8 @@ on_tty() {
 # The min:motd rc line from either writer, in each shell there is: an
 # interactive shell on a terminal runs the banner with the ssh detach hint and
 # unsets it; one with no terminal (VS Code's shell-env probe) prints nothing
-# and leaves MINIMAL_MOTD for later terminals.
+# and leaves MINIMAL_MOTD for later terminals; a broken banner prints nothing
+# (BSD script(1) echoes the ^D of its empty stdin first).
 # shellcheck disable=SC2016  # literal on purpose
 case_motd_rc_line_shells() {
     MOTD='echo "motd: $MINIMAL_DETACH_HINT"'
@@ -1178,6 +1179,10 @@ case_motd_rc_line_shells() {
             command -v script >/dev/null || { skip "no script(1) for a terminal"; continue; }
             out=$(HOME=$B MINIMAL_MOTD=$MOTD on_tty sh "$B/t.sh" $sh 2>/dev/null | tr -d '\r')
             case $out in *"motd: close the terminal"*"after: unset"*) ;; *) fail "$w $sh -i on a tty: $out" ;; esac
+            # ~/.ssh/environment keeps one line of a multi-line banner: a
+            # broken one prints no syntax error (the tty carries stderr too).
+            out=$(HOME=$B MINIMAL_MOTD='if' on_tty sh "$B/t.sh" $sh 2>&1 | tr -d "\r\010" | sed "s/^\\^D//")
+            [ "$out" = "after: unset" ] || fail "$w $sh -i on a tty, broken banner: $out"
         done
     done
 }
