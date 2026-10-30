@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stub for env, linked only by the env-file cases: GNU env 9.12 (the box's).
+# `env -0` prints raw NUL-separated entries (the real env); plain `env`
+# shell-quotes a value with spaces or shell metacharacters, as 9.12 does.
+case "${1:-}" in -0) exec /usr/bin/env "$@" ;; esac
+/usr/bin/env "$@" | awk '{
+    i = index($0, "="); n = substr($0, 1, i); v = substr($0, i + 1)
+    if (i && v ~ /[^A-Za-z0-9_\/.:,=@%+-]/) { gsub(/\047/, "\047\\\047\047", v); v = "\047" v "\047" }
+    print n v }'

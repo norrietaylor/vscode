@@ -21,7 +21,7 @@ the editor-specific constants, settings keys and loadout differ.
 | `extension/` | the VS Code extension (TypeScript, `extensionKind: ui`): Minimal view, commands, status bar; every action is a `min-vscode` call. The VSIX bundles `bin/`, `loadouts/` and `skills/` under `cli/` |
 | `minimal.toml` | developing this repo in a box: session packages for `just check`/`just vsix`; tasks `check`, `vsix` (`min task run check`) |
 | `justfile` | `check` (also type-checks `extension/`), `install`/`uninstall` (= `setup`), `ssh-config`, `vscode-config`, `skills`, `ext-deps`, `vsix` |
-| `tests/run.sh`, `tests/stubs/` | plain-sh tests over stub `min`, `code`, `ssh`, `ssh-keygen`, `ps` and a `tripwire` for bare GUI commands; `LONG_PREFIX=1` reruns them with a long host prefix |
+| `tests/run.sh`, `tests/stubs/` | plain-sh tests over stub `min`, `code`, `ssh`, `ssh-keygen`, `ps`, `env` and a `tripwire` for bare GUI commands; `LONG_PREFIX=1` reruns them with a long host prefix |
 | `docs/` | `vscode.md` (guide, VS Code's Remote-SSH and a box, settings), `commands.md`, `configuration.md`, `security.md`, `troubleshooting.md`, `how-it-works.md`, `public/` marks and badge |
 
 ## Invariants
@@ -126,8 +126,10 @@ the editor-specific constants, settings keys and loadout differ.
   (seen in a box with VS Code 1.143.0, 2026-10-28).
 - The box is uid 1000 with `$HOME=/home`, aarch64, glibc 2.44, has bash, tar,
   curl, python3, zsh; `sshd` at `/usr/sbin/sshd`.
-- sshd scrubs the environment: PREP writes `~/.ssh/environment` (filtering
-  `PROMPT_COMMAND`, the attach shell's banner trigger) and sshd runs with
+- sshd scrubs the environment: PREP writes `~/.ssh/environment` from
+  `env -0` (the box's GNU env 9.12 shell-quotes values with spaces, and sshd
+  reads the file literally; a value with a newline is left out), filtering
+  `PROMPT_COMMAND`, the attach shell's banner trigger, and sshd runs with
   `PermitUserEnvironment=yes`. `MINIMAL_MOTD` is kept: the `min:motd` rc line
   is written to print it in the first interactive shell that has
   `SSH_CONNECTION` and whose stdout is a TTY, then unsets it (a non-TTY
