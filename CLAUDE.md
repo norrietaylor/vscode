@@ -153,3 +153,8 @@ the editor-specific constants, settings keys and loadout differ.
 - Copilot and Claude Code use the skills (they are copied to
   `~/.copilot/skills` and `~/.claude/skills` on the Mac and in the box;
   seen 2026-10-28).
+- The env of `min session exec` (where PREP runs) has MINIMAL_MOTD; without
+  it, PREP rewrites `~/.ssh/environment` without it and no ssh shell shows
+  the banner.
+- A VS Code terminal shows the banner once, the remote shell-env probe prints
+  nothing, and a `min session attach` shell keeps minimald's own banner.

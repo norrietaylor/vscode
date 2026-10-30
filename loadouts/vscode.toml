@@ -44,9 +44,12 @@ patches = [
 # The rc lines, each added once (its marker; PREP adds the same lines on
 # connect): `min:workbench` moves an interactive shell that starts in $HOME
 # (/home, where sshd and VS Code's terminals start) to /workbench; `min:motd`
-# then prints the box's banner in an interactive shell on a terminal and unsets
-# MINIMAL_MOTD so nested shells stay quiet; a shell with no terminal (VS Code's
-# shell-environment probe) prints nothing and leaves it for later terminals.
+# then prints the box's banner in an interactive shell on a terminal that came
+# through sshd (SSH_CONNECTION, which ~/.ssh/environment never carries) and
+# unsets MINIMAL_MOTD so nested shells stay quiet; a shell with no terminal
+# (VS Code's shell-environment probe) prints nothing and leaves it for later
+# terminals, and a `min session attach` shell leaves it to minimald's own
+# PROMPT_COMMAND trigger, which shows the attach detach hint.
 # Its errors go to /dev/null: ~/.ssh/environment keeps only the first line of
 # a multi-line MINIMAL_MOTD (a user loadout's), which would not parse.
 #
@@ -66,7 +69,7 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   fi
   if ! grep -qs "min:motd" "$rc" </dev/null; then
     printf '%s\n' '# min:motd (managed by min-vscode)' \
-      'case $- in *i*) if [ -t 1 ] && [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="close the terminal"; eval "$MINIMAL_MOTD" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac' >> "$rc" </dev/null || true
+      'case $- in *i*) if [ -t 1 ] && [ -n "${SSH_CONNECTION:-}" ] && [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="close the terminal"; eval "$MINIMAL_MOTD" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac' >> "$rc" </dev/null || true
   fi
 done
 # bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc.

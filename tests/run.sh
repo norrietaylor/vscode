@@ -1159,14 +1159,17 @@ on_tty() {
     else script -q /dev/null "$@" < /dev/null; fi
 }
 
-# The min:motd rc line from either writer, in each shell there is: an
-# interactive shell on a terminal runs the banner with the ssh detach hint and
-# unsets it; one with no terminal (VS Code's shell-env probe) prints nothing
-# and leaves MINIMAL_MOTD for later terminals; a broken banner prints nothing
-# (BSD script(1) echoes the ^D of its empty stdin first).
+# The min:motd rc line from either writer (the two write the same lines), in
+# each shell there is: an interactive ssh shell on a terminal runs the banner
+# with the ssh detach hint and unsets it; one with no terminal (VS Code's
+# shell-env probe) prints nothing and leaves MINIMAL_MOTD for later terminals;
+# a broken banner prints nothing (BSD script(1) echoes the ^D of its empty
+# stdin first); a `min session attach`-like bash (no SSH_CONNECTION, rcfile
+# sourcing ~/.bashrc, minimald's PROMPT_COMMAND) prints nothing from the line
+# and leaves MINIMAL_MOTD to PROMPT_COMMAND.
 # shellcheck disable=SC2016  # literal on purpose
 case_motd_rc_line_shells() {
-    MOTD='echo "motd: $MINIMAL_DETACH_HINT"'
+    MOTD='echo "motd: $MINIMAL_DETACH_HINT"' SSHC='10.0.0.1 50000 10.0.0.2 22'
     for w in loadout prep; do
         B=$T/rc-$w; mkdir -p "$B"
         if [ $w = loadout ]; then HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
@@ -1174,17 +1177,24 @@ case_motd_rc_line_shells() {
         printf '%s\n' 'cd "$HOME" && exec "$1" -i -c '"'"'echo "after: ${MINIMAL_MOTD-unset}"'"'" > "$B/t.sh"
         for sh in bash zsh; do
             command -v $sh >/dev/null || continue
-            out=$(HOME=$B MINIMAL_MOTD=$MOTD sh "$B/t.sh" $sh 2>/dev/null < /dev/null)
+            out=$(HOME=$B SSH_CONNECTION=$SSHC MINIMAL_MOTD=$MOTD sh "$B/t.sh" $sh 2>/dev/null < /dev/null)
             [ "$out" = "after: $MOTD" ] || fail "$w $sh -i, no tty: $out"
             command -v script >/dev/null || { skip "no script(1) for a terminal"; continue; }
-            out=$(HOME=$B MINIMAL_MOTD=$MOTD on_tty sh "$B/t.sh" $sh 2>/dev/null | tr -d '\r')
+            out=$(HOME=$B SSH_CONNECTION=$SSHC MINIMAL_MOTD=$MOTD on_tty sh "$B/t.sh" $sh 2>/dev/null | tr -d '\r')
             case $out in *"motd: close the terminal"*"after: unset"*) ;; *) fail "$w $sh -i on a tty: $out" ;; esac
             # ~/.ssh/environment keeps one line of a multi-line banner: a
             # broken one prints no syntax error (the tty carries stderr too).
-            out=$(HOME=$B MINIMAL_MOTD='if' on_tty sh "$B/t.sh" $sh 2>&1 | tr -d "\r\010" | sed "s/^\\^D//")
+            out=$(HOME=$B SSH_CONNECTION=$SSHC MINIMAL_MOTD='if' on_tty sh "$B/t.sh" $sh 2>&1 | tr -d "\r\010" | sed "s/^\\^D//")
             [ "$out" = "after: unset" ] || fail "$w $sh -i on a tty, broken banner: $out"
         done
+        if ! command -v bash >/dev/null || ! command -v script >/dev/null; then continue; fi
+        printf '%s\n' '. "$HOME/.bashrc"' 'echo "after: ${MINIMAL_MOTD-unset}"; exit' > "$B/attach.rc"
+        out=$(HOME=$B MINIMAL_MOTD=$MOTD PROMPT_COMMAND='eval "$MINIMAL_MOTD"; unset PROMPT_COMMAND MINIMAL_MOTD' \
+            on_tty env -u SSH_CONNECTION bash --noprofile --rcfile "$B/attach.rc" -i 2>/dev/null | tr -d '\r')
+        case $out in *"motd: close"*|*"after: unset"*) fail "$w attach-like bash on a tty: $out" ;; esac
+        case $out in *"after: $MOTD"*) ;; *) fail "$w attach-like bash on a tty: $out" ;; esac
     done
+    cmp -s "$T/rc-loadout/.bashrc" "$T/rc-prep/.bashrc" || fail "writers differ: $(diff "$T/rc-loadout/.bashrc" "$T/rc-prep/.bashrc")"
 }
 
 # ---- ssh-config ----------------------------------------------------------------

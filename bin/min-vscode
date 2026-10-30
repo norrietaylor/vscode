@@ -124,8 +124,9 @@ put() {
 # which is itself cleared when over a minute old; without `find -mmin`
 # neither is ever broken.
 # The rc lines move interactive shells that start in $HOME to /workbench, then
-# print the box's banner (MINIMAL_MOTD; PROMPT_COMMAND, minimald's attach
-# trigger for it, is kept out of ~/.ssh/environment).
+# print the box's banner in shells that came through sshd (MINIMAL_MOTD;
+# PROMPT_COMMAND, minimald's attach trigger for it, is kept out of
+# ~/.ssh/environment, and attach shells, without SSH_CONNECTION, keep to it).
 # shellcheck disable=SC2016
 PREP='set -eu
 umask 077
@@ -161,7 +162,7 @@ env | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|H
 mv -f "$s/environment.$$" "$s/environment"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   grep -qs "min:workbench" "$rc" || printf "%s\n" "# min:workbench (managed by $0)" "case \$- in *i*) if [ \"\$PWD\" = \"\$HOME\" ] && [ -d /workbench ]; then cd /workbench; fi ;; esac" >> "$rc"
-  grep -qs "min:motd" "$rc" || printf "%s\n" "# min:motd (managed by $0)" "case \$- in *i*) if [ -t 1 ] && [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"close the terminal\"; eval \"\$MINIMAL_MOTD\" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac" >> "$rc"
+  grep -qs "min:motd" "$rc" || printf "%s\n" "# min:motd (managed by $0)" "case \$- in *i*) if [ -t 1 ] && [ -n \"\${SSH_CONNECTION:-}\" ] && [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"close the terminal\"; eval \"\$MINIMAL_MOTD\" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac" >> "$rc"
 done
 [ -e "$HOME/.bash_profile" ] || printf "%s\n" "[ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\"" > "$HOME/.bash_profile"
 echo "user=$(id -un)"
