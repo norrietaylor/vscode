@@ -169,7 +169,10 @@ async function create(args: string[], title: string, view: Boxes): Promise<void>
 async function doctor(quiet: boolean): Promise<boolean> {
   const r = await run(['doctor']);
   out.appendLine(r.stdout);
-  if (r.code === 0) return true;
+  if (r.code === 0) {
+    if (!quiet && await vscode.window.showInformationMessage('Minimal: doctor found no problems.', 'Show Output')) out.show();
+    return true;
+  }
   if (!quiet) out.show();
   const pick = await vscode.window.showWarningMessage('Minimal: doctor found problems.', 'Show Output');
   if (pick) out.show();
