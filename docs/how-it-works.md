@@ -101,10 +101,11 @@ contacts a box to find out.
 ### open / new / attach
 
 1. Pick or activate the session (`min session activate --no-prompt
-   [--loadout D]... --loadout vscode [-n NAME] PATH`, D being your
-   `[loadouts] default_loadouts`, which min skips once any `--loadout` is
-   named; without `-n`, min names it and min-vscode takes the one new
-   session for PATH).
+   [--loadout built-in] [--loadout D]... --loadout vscode [-n NAME] PATH`,
+   D being your `[loadouts] default_loadouts`, which min skips once any
+   `--loadout` is named; `built-in` only when a `min loadout list` row is
+   named exactly that and D does not name it; without `-n`, min names it and
+   min-vscode takes the one new session for PATH).
 2. `prepare` (above).
 3. `client_on_connect`: settings refresh (below).
 4. `code --remote ssh-remote+min-vscode.NAME /workbench` (skipped with
