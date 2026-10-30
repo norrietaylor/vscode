@@ -129,9 +129,9 @@ the editor-specific constants, settings keys and loadout differ.
 - sshd scrubs the environment: PREP writes `~/.ssh/environment` (filtering
   `PROMPT_COMMAND`, the attach shell's banner trigger) and sshd runs with
   `PermitUserEnvironment=yes`. `MINIMAL_MOTD` is kept: the `min:motd` rc line
-  prints it in the first interactive shell that has `SSH_CONNECTION` and
-  whose stdout is a TTY, then unsets it (a non-TTY probe leaves it set). A
-  `min session attach` shell sources `~/.bashrc`/`~/.zshrc` too, without
+  is written to print it in the first interactive shell that has
+  `SSH_CONNECTION` and whose stdout is a TTY, then unsets it (a non-TTY
+  probe leaves it set). A `min session attach` shell sources `~/.bashrc`/`~/.zshrc` too, without
   `SSH_CONNECTION`; there minimald's own `PROMPT_COMMAND` prints the banner
   with the real detach chord. Both writers replace a `min:motd` line that
   differs, and add a marked `min:bashrc` line to an existing
@@ -164,5 +164,8 @@ the editor-specific constants, settings keys and loadout differ.
 - The env of `min session exec` (where PREP runs) has MINIMAL_MOTD; without
   it, PREP rewrites `~/.ssh/environment` without it and no ssh shell shows
   the banner.
-- A VS Code terminal shows the banner once, the remote shell-env probe prints
-  nothing, and a `min session attach` shell keeps minimald's own banner.
+- Over real sshd (`PermitUserEnvironment=yes` reading a `MINIMAL_MOTD`
+  value from `~/.ssh/environment`), a VS Code terminal and an interactive
+  `min-vscode ssh` shell show the banner once, the remote shell-env probe
+  prints nothing, and a `min session attach` shell keeps minimald's own
+  banner (the tests run the rc lines in local bash and zsh, not over sshd).
