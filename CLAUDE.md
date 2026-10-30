@@ -16,7 +16,7 @@ the editor-specific constants, settings keys and loadout differ.
 | plumbing | transport, PREP/prepare, `stored_path`, ssh options and stanzas, `ssh-config`, `_proxy`, `ssh`, naming, `activate_session`, `destroy_one`, `in_use_names`/`box_in_use`, `track_orphans`, `default_loadouts`, the ssh-config record, report helpers; editor-neutral, reaching the client layer only through its hooks |
 | client layer | `open`/`new`/`attach` (session, stanza, settings, `code --remote` unless `--no-window`; `new --empty`), `destroy` (`--if-idle`), `gc`, `status` (`--json`), `doctor`, `completions`, `config`, `setup`, hidden `_sessions`; hooks `client_on_connect` and `client_on_destroy` (settings sync) |
 | `bin/min-vscode-config` | python3: marked-block merge of per-host `remote.SSH.remotePlatform` and `remote.SSH.useLocalServer: false` into VS Code's user settings.json; `--install`, `--sync NAME...`, `--remove`, `--doctor`, `--dry-run` |
-| `loadouts/vscode.toml`, `loadouts/vscode/` | `openssh curl rsync xxhash git`; sshd env prep; `min:workbench` rc line; patches copying `vscode/skills/minimal-sandbox` to `~/.copilot/skills` and `~/.claude/skills` in the box. `setup` copies `vscode/` beside the linked toml: `$LOADOUT_ROOT` must be a real directory |
+| `loadouts/vscode.toml`, `loadouts/vscode/` | `openssh curl rsync xxhash git`; sshd env prep; `min:workbench` and `min:motd` rc lines; patches copying `vscode/skills/minimal-sandbox` to `~/.copilot/skills` and `~/.claude/skills` in the box. `setup` copies `vscode/` beside the linked toml: `$LOADOUT_ROOT` must be a real directory |
 | `skills/`, `loadouts/vscode/skills/` | Minimal's skills, vendored from gominimal/minimal-skills (MIT) at a pinned commit by `just skills`: the host ones (`setup` copies them into the Mac's `~/.copilot/skills` and `~/.claude/skills`, marked `.min-vscode-copy`, never over a dir with no `.min-*-copy` mark; one another min tool marked is shared, keeping its mark, and `--remove` deletes it only once no other mark is left) and `minimal-sandbox` (box only: the host ones teach commands a box lacks) |
 | `extension/` | the VS Code extension (TypeScript, `extensionKind: ui`): Minimal view, commands, status bar; every action is a `min-vscode` call. The VSIX bundles `bin/`, `loadouts/` and `skills/` under `cli/` |
 | `minimal.toml` | developing this repo in a box: session packages for `just check`/`just vsix`; tasks `check`, `vsix` (`min task run check`) |
@@ -127,7 +127,8 @@ the editor-specific constants, settings keys and loadout differ.
 - The box is uid 1000 with `$HOME=/home`, aarch64, glibc 2.44, has bash, tar,
   curl, python3, zsh; `sshd` at `/usr/sbin/sshd`.
 - sshd scrubs the environment: PREP writes `~/.ssh/environment` (filtering
-  `PROMPT_COMMAND`/`MINIMAL_MOTD`) and sshd runs with `PermitUserEnvironment=yes`.
+  `PROMPT_COMMAND`, keeping `MINIMAL_MOTD` for the `min:motd` rc line) and
+  sshd runs with `PermitUserEnvironment=yes`.
 - In the box, the host key and `authorized_keys` live in `~/.ssh/min-vscode/`.
 - Without a terminal, `min session destroy` refuses a box with unsaved
   changes ("refusing to destroy the session without confirmation; pass

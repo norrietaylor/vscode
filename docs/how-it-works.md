@@ -41,8 +41,8 @@ PUBKEY`. PREP, in the box:
   locks broken by one waiter at a time; the pair renamed into place whole),
   so concurrent connects agree on one key;
 - writes `authorized_keys`;
-- rewrites `~/.ssh/environment` from `env`;
-- appends the `min:workbench` rc line (unless one is there) and a `~/.bash_profile` that sources
+- rewrites `~/.ssh/environment` from `env`, without `PROMPT_COMMAND`;
+- appends the `min:workbench` and `min:motd` rc lines (each unless one is there) and a `~/.bash_profile` that sources
   `~/.bashrc`;
 - prints `user=`, `home=`, `sshd=`, `hostkey=`.
 

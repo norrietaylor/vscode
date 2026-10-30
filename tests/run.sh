@@ -1140,11 +1140,36 @@ loadout_hook() {
 
 case_loadout_rc_line_once() {
     B=$T/box; mkdir -p "$B"
+    export MINIMAL_MOTD='[ -t 1 ] && printf banner' PROMPT_COMMAND=trigger
     HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
     HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
-    [ "$(grep -c 'min:workbench' "$B/.bashrc")" = 1 ] || fail ".bashrc: $(cat "$B/.bashrc")"
-    [ "$(grep -c 'min:workbench' "$B/.zshrc")" = 1 ] || fail ".zshrc: $(cat "$B/.zshrc")"
+    for m in min:workbench min:motd; do
+        [ "$(grep -c "$m" "$B/.bashrc")" = 1 ] || fail ".bashrc: $(cat "$B/.bashrc")"
+        [ "$(grep -c "$m" "$B/.zshrc")" = 1 ] || fail ".zshrc: $(cat "$B/.zshrc")"
+    done
     assert_file "$B/.bash_profile"
+    assert_file_contains "$B/.ssh/environment" "MINIMAL_MOTD=$MINIMAL_MOTD"
+    assert_file_not_contains "$B/.ssh/environment" "PROMPT_COMMAND="
+}
+
+# The min:motd rc line from either writer, in each shell there is: an
+# interactive shell runs the banner with the ssh detach hint and unsets it; the
+# box's own banner (`[ -t 1 ]`) prints nothing when stdout is no terminal.
+# shellcheck disable=SC2016  # literal on purpose
+case_motd_rc_line_shells() {
+    for w in loadout prep; do
+        B=$T/rc-$w; mkdir -p "$B"
+        if [ $w = loadout ]; then HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+        else HOME=$B sh -c "$(prep_script)" "$TOOL" "ssh-ed25519 AAAAUSER user" > /dev/null 2>&1 < /dev/null; fi
+        for sh in bash zsh; do
+            command -v $sh >/dev/null || continue
+            out=$(cd "$B" && HOME=$B MINIMAL_MOTD='echo "motd: $MINIMAL_DETACH_HINT"' $sh -i -c 'echo "after: ${MINIMAL_MOTD-unset}"' 2>/dev/null < /dev/null)
+            [ "$out" = "motd: close the terminal
+after: unset" ] || fail "$w $sh -i: $out"
+            out=$(cd "$B" && HOME=$B MINIMAL_MOTD='[ -t 1 ] && echo banner' $sh -i -c 'echo "after: ${MINIMAL_MOTD-unset}"' 2>/dev/null < /dev/null)
+            [ "$out" = "after: unset" ] || fail "$w $sh -i, no tty: $out"
+        done
+    done
 }
 
 # ---- ssh-config ----------------------------------------------------------------
@@ -1561,14 +1586,18 @@ assert_facts_only() {
 
 case_prep_extracts_and_prints_facts() {
     prep_script | grep -q '^echo "hostkey=' || fail "prep_script did not cut PREP out of the CLI"
+    export MINIMAL_MOTD='[ -t 1 ] && printf banner' PROMPT_COMMAND=trigger
     run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
     assert_facts_only "$T/p1"
+    assert_file_contains "$T/box/.ssh/environment" "MINIMAL_MOTD=$MINIMAL_MOTD"
+    assert_file_not_contains "$T/box/.ssh/environment" "PROMPT_COMMAND="
     assert_line_in "$(cat "$T/p1")" "hostkey=ssh-ed25519 AAAAPUB"
     assert_file "$T/box/.ssh/$TOOL/authorized_keys" "ssh-ed25519 AAAAUSER user"
     assert_mode "$T/box/$BOXD/host_ed25519" 600
     run_prep "$T/p2" || fail "second PREP failed"
     assert_log_count 1 "ssh-keygen"
     [ "$(grep -c 'min:workbench' "$T/box/.zshrc")" = 1 ] || fail "rc line repeated"
+    [ "$(grep -c 'min:motd' "$T/box/.bashrc")" = 1 ] || fail "motd rc line repeated"
 }
 
 case_prep_waiter_keeps_lock_it_does_not_own() {
@@ -1871,7 +1900,7 @@ config_print_and_bad_option config_and_doctor_keep_entries_when_min_ls_fails mer
 merger_symlink_written_through merger_preserves_foreign_entries_vscode_put_in_block
 merger_moves_foreign_keys_out_of_block merger_upgrades_old_block merger_bad_jsonc_left_alone doctor_rows doctor_min_version
 new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes setup_remove_stops_when_config_refuses setup_through_link setup_shares_skills_with_other_tools
-loadout_rc_line_once
+loadout_rc_line_once motd_rc_line_shells
 sshconfig_install_creates_include_and_stanza sshconfig_remove_restores_original
 sshconfig_coexists_with_another_tool sshconfig_keeps_symlinked_config sshconfig_print_touches_nothing
 sshconfig_destroy_drops_stanza sshconfig_stale_and_invalid_dirs_skipped sshconfig_real_ssh_resolves

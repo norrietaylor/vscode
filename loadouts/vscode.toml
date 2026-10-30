@@ -37,12 +37,16 @@ patches = [
 #
 # sshd scrubs the environment, so the sshd min-vscode runs has
 # PermitUserEnvironment=yes and reads ~/.ssh/environment, written here from
-# `env` and filtered exactly as PREP filters it (PROMPT_COMMAND/MINIMAL_MOTD are
-# minimald's attach banner and break an ssh-started bash).
+# `env` and filtered exactly as PREP filters it (PROMPT_COMMAND is minimald's
+# attach trigger for the banner and breaks an ssh-started bash; MINIMAL_MOTD,
+# the banner itself, stays).
 #
-# The rc line moves an interactive shell that starts in $HOME (/home, where
-# sshd and VS Code's terminals start) to /workbench, once (the
-# `min:workbench` marker; PREP adds the same line on connect).
+# The rc lines, each added once (its marker; PREP adds the same lines on
+# connect): `min:workbench` moves an interactive shell that starts in $HOME
+# (/home, where sshd and VS Code's terminals start) to /workbench; `min:motd`
+# then prints the box's banner in an interactive shell (the banner's own
+# `[ -t 1 ]` keeps it out of non-terminal output) and unsets MINIMAL_MOTD so
+# nested shells stay quiet.
 #
 # Guarded: a failure here must not abort the activation. Commands that do not
 # need stdin get </dev/null: the script itself arrives on the shell's stdin.
@@ -52,11 +56,15 @@ on_activate.type = "inline"
 on_activate.value = '''
 umask 077
 mkdir -p "$HOME/.ssh" </dev/null || true
-env </dev/null | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND|MINIMAL_MOTD)=" > "$HOME/.ssh/environment" || true
+env </dev/null | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$HOME/.ssh/environment" || true
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   if ! grep -qs "min:workbench" "$rc" </dev/null; then
     printf '%s\n' '# min:workbench (managed by min-vscode)' \
       'case $- in *i*) if [ "$PWD" = "$HOME" ] && [ -d /workbench ]; then cd /workbench; fi ;; esac' >> "$rc" </dev/null || true
+  fi
+  if ! grep -qs "min:motd" "$rc" </dev/null; then
+    printf '%s\n' '# min:motd (managed by min-vscode)' \
+      'case $- in *i*) if [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="close the terminal"; eval "$MINIMAL_MOTD"; fi; unset MINIMAL_MOTD MINIMAL_DETACH_HINT ;; esac' >> "$rc" </dev/null || true
   fi
 done
 # bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc.

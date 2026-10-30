@@ -24,7 +24,7 @@ Needs min 0.7.0 or newer; `doctor` fails on an older one.
 `xxhash` and `git`, copies Minimal's `minimal-sandbox` skill into
 `~/.copilot/skills` (Copilot) and `~/.claude/skills` (Claude Code in the box) (vendored in `loadouts/vscode/` from
 gominimal/minimal-skills; `just skills` refreshes it), prepares the in-box sshd environment, and adds the
-`min:workbench` rc line. `min-vscode setup` symlinks it to
+`min:workbench` and `min:motd` rc lines. `min-vscode setup` symlinks it to
 `~/.config/minimal/loadouts/vscode.toml` and copies `loadouts/vscode/` beside
 it. It is never added to
 `default_loadouts`: min-vscode activates with your `default_loadouts` plus

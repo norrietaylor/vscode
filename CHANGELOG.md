@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Terminals in a box print Minimal's banner (session, loadouts, `min init`
+  pointer) once per interactive shell: `~/.ssh/environment` keeps
+  `MINIMAL_MOTD` (still not `PROMPT_COMMAND`), and a `min:motd` rc line
+  prints it.
+
 ### Fixed
 
 - `destroy` and `gc`: a failed `min ls` after the answer no longer counts as

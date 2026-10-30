@@ -123,7 +123,9 @@ put() {
 # old (owner died) is broken by one waiter at a time, under .keygen.break,
 # which is itself cleared when over a minute old; without `find -mmin`
 # neither is ever broken.
-# The rc line moves interactive shells that start in $HOME to /workbench.
+# The rc lines move interactive shells that start in $HOME to /workbench, then
+# print the box's banner (MINIMAL_MOTD; PROMPT_COMMAND, minimald's attach
+# trigger for it, is kept out of ~/.ssh/environment).
 # shellcheck disable=SC2016
 PREP='set -eu
 umask 077
@@ -155,10 +157,11 @@ while [ ! -s "$k" ] || [ ! -s "$k.pub" ]; do
   sleep 1; i=$((i + 1))
 done
 printf "%s\n" "$1" > "$a/authorized_keys.$$" && mv -f "$a/authorized_keys.$$" "$a/authorized_keys"
-env | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND|MINIMAL_MOTD)=" > "$s/environment.$$" || true
+env | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$s/environment.$$" || true
 mv -f "$s/environment.$$" "$s/environment"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   grep -qs "min:workbench" "$rc" || printf "%s\n" "# min:workbench (managed by $0)" "case \$- in *i*) if [ \"\$PWD\" = \"\$HOME\" ] && [ -d /workbench ]; then cd /workbench; fi ;; esac" >> "$rc"
+  grep -qs "min:motd" "$rc" || printf "%s\n" "# min:motd (managed by $0)" "case \$- in *i*) if [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"close the terminal\"; eval \"\$MINIMAL_MOTD\"; fi; unset MINIMAL_MOTD MINIMAL_DETACH_HINT ;; esac" >> "$rc"
 done
 [ -e "$HOME/.bash_profile" ] || printf "%s\n" "[ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\"" > "$HOME/.bash_profile"
 echo "user=$(id -un)"
