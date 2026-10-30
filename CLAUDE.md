@@ -78,7 +78,10 @@ the editor-specific constants, settings keys and loadout differ.
 - `config`/doctor never prune on a failed `min ls`. `--remove` restores the
   bytes it found (brace framing, CRLF, BOM); a user's own remotePlatform
   object that we rewrote is re-indented.
-- Activation passes the user's `default_loadouts` on before `--loadout vscode`.
+- Activation passes the user's `default_loadouts` on before `--loadout vscode`,
+  after `--loadout built-in` when `min loadout list` has a row named exactly
+  `built-in` (`has_builtin_loadout`, gominimal/inbox#1182) and
+  `default_loadouts` does not name it; a failing list leaves it out.
 - What `ssh-config` created under `~/.ssh` is recorded in
   `~/.local/state/min-clients/ssh-config-created`; removing the last
   `Include ~/.ssh/min-*.conf` deletes only that, so `~/.ssh/config` ends

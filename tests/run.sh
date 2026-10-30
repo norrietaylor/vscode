@@ -1909,6 +1909,61 @@ case_open_default_loadouts_toml_forms() {
     ! grep -q 'default_loadouts' "$T/err" || fail "an empty list is not unreadable: $(cat "$T/err")"
 }
 
+# min's `built-in` loadout (gominimal/inbox#1182) goes first, once, and only
+# when `min loadout list` has a row named exactly built-in.
+case_open_adds_builtin_loadout() {
+    installed
+    mkdir -p "$HOME/.config/minimal"
+    printf '[loadouts]\ndefault_loadouts = ["dots"]\n' > "$HOME/.config/minimal/config.toml"
+    printf '  NAME      DESCRIPTION              CONTRIBUTES\n  vscode    sshd for VS Code         5 pkg\n  built-in  orientation banner       0 pkg\n' > "$FIXTURES/loadouts.txt"
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_rc 0
+    assert_log_contains "min session activate --no-prompt --loadout built-in --loadout dots --loadout vscode $P"
+    for row in '* built-in (shipped)  banner' '*built-in  banner' '  built-in (user)  mine'; do
+        printf '  NAME  DESCRIPTION\n%s\n' "$row" > "$FIXTURES/loadouts.txt"
+        printf '{"sessions":[]}\n' > "$FIXTURES/sessions.json"; reset_log
+        run open "$P"
+        assert_log_contains "min session activate --no-prompt --loadout built-in --loadout dots --loadout vscode $P"
+    done
+}
+
+# Today's list names the built-in `default (built-in)`: not selectable, not added.
+case_open_skips_builtin_loadout_min_lacks() {
+    installed
+    printf '  NAME                DESCRIPTION\n  vscode              sshd\n  built-ins           a user loadout\n  default (built-in)  orientation banner and shaped prompt\n\n  default (built-in) applied when no loadouts are configured\n' > "$FIXTURES/loadouts.txt"
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_rc 0
+    assert_log_contains "min session activate --no-prompt --loadout vscode $P"
+    assert_log_not_contains "--loadout built-in"
+}
+
+# default_loadouts already naming built-in keeps its place; never twice.
+case_open_builtin_loadout_once() {
+    installed
+    mkdir -p "$HOME/.config/minimal"
+    printf '[loadouts]\ndefault_loadouts = ["dots", "built-in"]\n' > "$HOME/.config/minimal/config.toml"
+    printf '  NAME      DESCRIPTION\n  built-in  banner\n' > "$FIXTURES/loadouts.txt"
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_rc 0
+    assert_log_contains "min session activate --no-prompt --loadout dots --loadout built-in --loadout vscode $P"
+}
+
+# A failing `min loadout list` leaves built-in out and activation goes on.
+case_open_builtin_loadout_list_fails() {
+    installed
+    printf '  NAME      DESCRIPTION\n  built-in  banner\n' > "$FIXTURES/loadouts.txt"
+    : > "$FIXTURES/loadouts.fail"
+    sessions_after proj-amber "$P"
+    run open "$P"
+    assert_rc 0
+    assert_log_contains "min loadout list"
+    assert_log_contains "min session activate --no-prompt --loadout vscode $P"
+    assert_log_not_contains "--loadout built-in"
+}
+
 # ~/.ssh/config is rewritten under one lock every tool shares.
 case_sshconfig_lock_held_waits_then_fails() {
     L=$HOME/.local/state/min-clients/ssh-config.lock
@@ -2040,6 +2095,7 @@ prep_regenerates_half_pair prep_keygen_failure_releases_lock prep_stale_lock_str
 open_default_loadouts_toml_forms sshconfig_lock_held_waits_then_fails
 sshconfig_two_tools_install_at_once gc_rechecks_before_each_question bad_session_name_refused
 completions_parse sessions_lists_names usage sshconfig_two_tools_coexist open_keeps_default_loadouts safety_gui_commands_absolute
+open_adds_builtin_loadout open_skips_builtin_loadout_min_lacks open_builtin_loadout_once open_builtin_loadout_list_fails
 "
 
 # Nothing under ~/.ssh unless the case opted in to ssh-config.

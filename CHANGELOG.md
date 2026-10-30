@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- New boxes get Minimal's `built-in` loadout (the mark, banner and `minimal:`
+  prompt) first, before your `default_loadouts` and `--loadout vscode`, once
+  min ships it (`min loadout list` shows a `built-in` row). It is never added
+  twice, and a failing `min loadout list` leaves it out.
+
 - Minimal's banner now shows in ssh shells: each new VS Code terminal and an
   interactive `min-vscode ssh` session print it once, with
   "exit or close the terminal" as the detach hint. `min session attach`

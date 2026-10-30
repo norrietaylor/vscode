@@ -33,10 +33,10 @@ extension.
 `--no-window` on any of them skips the window; the extension uses it and
 opens the window itself.
 
-New sessions are activated with your `default_loadouts` plus
-`--loadout vscode`. Each command prepares the box (pins its host key, pushes
-the public key, refreshes the stanza), refreshes the settings block, then
-runs:
+New sessions are activated with Minimal's `built-in` loadout (when min has
+it), your `default_loadouts` and `--loadout vscode`. Each command prepares the
+box (pins its host key, pushes the public key, refreshes the stanza),
+refreshes the settings block, then runs:
 
     code --remote ssh-remote+min-vscode.NAME /workbench
 
