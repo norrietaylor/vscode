@@ -1140,61 +1140,113 @@ loadout_hook() {
 
 case_loadout_rc_line_once() {
     B=$T/box; mkdir -p "$B"
-    export MINIMAL_MOTD='[ -t 1 ] && printf banner' PROMPT_COMMAND=trigger
     HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
     HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
     for m in min:workbench min:motd; do
-        [ "$(grep -c "$m" "$B/.bashrc")" = 1 ] || fail ".bashrc: $(cat "$B/.bashrc")"
-        [ "$(grep -c "$m" "$B/.zshrc")" = 1 ] || fail ".zshrc: $(cat "$B/.zshrc")"
+        [ "$(grep -c "$m" "$B/.bashrc")" = 1 ] || fail ".bashrc $m: $(cat "$B/.bashrc")"
+        [ "$(grep -c "$m" "$B/.zshrc")" = 1 ] || fail ".zshrc $m: $(cat "$B/.zshrc")"
     done
     assert_file "$B/.bash_profile"
-    assert_file_contains "$B/.ssh/environment" "MINIMAL_MOTD=$MINIMAL_MOTD"
+}
+
+# The banner reaches ssh shells: MINIMAL_MOTD stays in ~/.ssh/environment,
+# PROMPT_COMMAND (the attach shell's trigger) does not.
+case_loadout_env_keeps_motd() {
+    B=$T/box; mkdir -p "$B"
+    HOME=$B PROMPT_COMMAND='eval x' MINIMAL_MOTD='echo hi' sh -c "$(loadout_hook 0)" < /dev/null
+    assert_file_contains "$B/.ssh/environment" "MINIMAL_MOTD=echo hi"
     assert_file_not_contains "$B/.ssh/environment" "PROMPT_COMMAND="
 }
 
-# on_tty CMD...: run CMD with a terminal on stdout, via script(1) (util-linux
-# or BSD form).
-on_tty() {
-    if script -qec true /dev/null >/dev/null 2>&1; then script -qec "$*" /dev/null < /dev/null
-    else script -q /dev/null "$@" < /dev/null; fi
+# PREP and the loadout write the same rc lines, so either may come first.
+case_prep_and_loadout_rc_lines_agree() {
+    mkdir -p "$T/box" "$T/lb"
+    run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
+    HOME=$T/lb sh -c "$(loadout_hook 0)" < /dev/null
+    [ "$(grep -v '^#' "$T/box/.zshrc")" = "$(grep -v '^#' "$T/lb/.zshrc")" ] ||
+        fail "rc lines differ: $(cat "$T/box/.zshrc") vs $(cat "$T/lb/.zshrc")"
 }
 
-# The min:motd rc line from either writer (the two write the same lines), in
-# each shell there is: an interactive ssh shell on a terminal runs the banner
-# with the ssh detach hint and unsets it; one with no terminal (VS Code's
-# shell-env probe) prints nothing and leaves MINIMAL_MOTD for later terminals;
-# a broken banner prints nothing (BSD script(1) echoes the ^D of its empty
-# stdin first); a `min session attach`-like bash (no SSH_CONNECTION, rcfile
-# sourcing ~/.bashrc, minimald's PROMPT_COMMAND) prints nothing from the line
-# and leaves MINIMAL_MOTD to PROMPT_COMMAND.
-# shellcheck disable=SC2016  # literal on purpose
-case_motd_rc_line_shells() {
-    MOTD='echo "motd: $MINIMAL_DETACH_HINT"' SSHC='10.0.0.1 50000 10.0.0.2 22'
-    for w in loadout prep; do
-        B=$T/rc-$w; mkdir -p "$B"
-        if [ $w = loadout ]; then HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
-        else HOME=$B sh -c "$(prep_script)" "$TOOL" "ssh-ed25519 AAAAUSER user" > /dev/null 2>&1 < /dev/null; fi
-        printf '%s\n' 'cd "$HOME" && exec "$1" -i -c '"'"'echo "after: ${MINIMAL_MOTD-unset}"'"'" > "$B/t.sh"
-        for sh in bash zsh; do
-            command -v $sh >/dev/null || continue
-            out=$(HOME=$B SSH_CONNECTION=$SSHC MINIMAL_MOTD=$MOTD sh "$B/t.sh" $sh 2>/dev/null < /dev/null)
-            [ "$out" = "after: $MOTD" ] || fail "$w $sh -i, no tty: $out"
-            command -v script >/dev/null || { skip "no script(1) for a terminal"; continue; }
-            out=$(HOME=$B SSH_CONNECTION=$SSHC MINIMAL_MOTD=$MOTD on_tty sh "$B/t.sh" $sh 2>/dev/null | tr -d '\r')
-            case $out in *"motd: close the terminal"*"after: unset"*) ;; *) fail "$w $sh -i on a tty: $out" ;; esac
-            # ~/.ssh/environment keeps one line of a multi-line banner: a
-            # broken one prints no syntax error (the tty carries stderr too).
-            out=$(HOME=$B SSH_CONNECTION=$SSHC MINIMAL_MOTD='if' on_tty sh "$B/t.sh" $sh 2>&1 | tr -d "\r\010" | sed "s/^\\^D//")
-            [ "$out" = "after: unset" ] || fail "$w $sh -i on a tty, broken banner: $out"
-        done
-        if ! command -v bash >/dev/null || ! command -v script >/dev/null; then continue; fi
-        printf '%s\n' '. "$HOME/.bashrc"' 'echo "after: ${MINIMAL_MOTD-unset}"; exit' > "$B/attach.rc"
-        out=$(HOME=$B MINIMAL_MOTD=$MOTD PROMPT_COMMAND='eval "$MINIMAL_MOTD"; unset PROMPT_COMMAND MINIMAL_MOTD' \
-            on_tty env -u SSH_CONNECTION bash --noprofile --rcfile "$B/attach.rc" -i 2>/dev/null | tr -d '\r')
-        case $out in *"motd: close"*|*"after: unset"*) fail "$w attach-like bash on a tty: $out" ;; esac
-        case $out in *"after: $MOTD"*) ;; *) fail "$w attach-like bash on a tty: $out" ;; esac
+# Off a terminal (VS Code's shell-env probe) the banner prints nothing and
+# stays set for the first shell that has one.
+case_motd_rc_line_quiet_without_tty() {
+    B=$T/box; mkdir -p "$B"
+    HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+    for sh in bash zsh; do
+        command -v $sh >/dev/null 2>&1 || continue
+        # shellcheck disable=SC2016 # literal on purpose
+        HOME=$B ZDOTDIR=$B SSH_CONNECTION='10.0.0.1 1 10.0.0.2 22' MINIMAL_MOTD='echo BANNER' $sh -i -c 'echo "[$MINIMAL_MOTD]"' > "$T/o.$sh" 2>/dev/null < /dev/null
+        [ "$(cat "$T/o.$sh")" = "[echo BANNER]" ] || fail "$sh -i off a tty printed: $(cat "$T/o.$sh")"
     done
-    cmp -s "$T/rc-loadout/.bashrc" "$T/rc-prep/.bashrc" || fail "writers differ: $(diff "$T/rc-loadout/.bashrc" "$T/rc-prep/.bashrc")"
+}
+
+# on_tty CMD: sh -c CMD with stdout and stderr on a pty (script(1), BSD or
+# util-linux); the transcript on stdout without CR, backspaces and the
+# tty's echo of the EOF it reads from /dev/null.
+on_tty() {
+    if script --version >/dev/null 2>&1; then
+        script -qec "$1" /dev/null < /dev/null
+    else
+        script -q /dev/null sh -c "$1" < /dev/null
+    fi | tr -d '\r\004\010' | sed 's/^\^D//'
+}
+
+# On a terminal over ssh the banner prints once, with the ssh detach hint in
+# place of the attach one, and is unset. A MINIMAL_MOTD that does not parse
+# (~/.ssh/environment keeps only a value's first line) prints nothing, not a
+# syntax error in every shell.
+case_motd_rc_line_on_tty() {
+    command -v script >/dev/null 2>&1 || return 0
+    B=$T/box; mkdir -p "$B"
+    HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+    for sh in bash zsh; do
+        command -v $sh >/dev/null 2>&1 || continue
+        # shellcheck disable=SC2016 # literal on purpose
+        c="$sh"' -i -c '\''echo "[${MINIMAL_MOTD-unset}|${MINIMAL_DETACH_HINT-unset}]"'\'
+        # shellcheck disable=SC2016 # literal on purpose
+        HOME=$B ZDOTDIR=$B SSH_CONNECTION='10.0.0.1 1 10.0.0.2 22' MINIMAL_DETACH_HINT='ctrl-] then d' \
+            MINIMAL_MOTD='echo "BANNER detach: ${MINIMAL_DETACH_HINT:-none}"' on_tty "$c" > "$T/o.$sh"
+        [ "$(cat "$T/o.$sh")" = "BANNER detach: exit or close the terminal
+[unset|unset]" ] || fail "$sh -i on a tty printed: $(cat "$T/o.$sh")"
+        HOME=$B ZDOTDIR=$B SSH_CONNECTION='10.0.0.1 1 10.0.0.2 22' MINIMAL_MOTD='if' on_tty "$c" > "$T/o.$sh"
+        [ "$(cat "$T/o.$sh")" = "[unset|unset]" ] || fail "$sh -i, MINIMAL_MOTD=if, printed: $(cat "$T/o.$sh")"
+    done
+}
+
+# A `min session attach` shell (a terminal, minimald's PROMPT_COMMAND and
+# detach hint, no SSH_CONNECTION) is left alone: minimald prints the banner
+# there with the real detach chord.
+case_motd_rc_line_skips_attach_shell() {
+    command -v script >/dev/null 2>&1 || return 0
+    B=$T/box; mkdir -p "$B"
+    HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+    for sh in bash zsh; do
+        command -v $sh >/dev/null 2>&1 || continue
+        # shellcheck disable=SC2016 # literal on purpose
+        c="$sh"' -i -c '\''echo "[${MINIMAL_MOTD-unset}|${MINIMAL_DETACH_HINT-unset}]"'\'
+        # shellcheck disable=SC2016 # literal on purpose
+        HOME=$B ZDOTDIR=$B SSH_CONNECTION='' PROMPT_COMMAND='eval "$MINIMAL_MOTD"' \
+            MINIMAL_DETACH_HINT='ctrl-] then d' MINIMAL_MOTD='echo BANNER' on_tty "$c" > "$T/o.$sh"
+        [ "$(cat "$T/o.$sh")" = "[echo BANNER|ctrl-] then d]" ] || fail "$sh -i in an attach shell printed: $(cat "$T/o.$sh")"
+    done
+}
+
+# An older `min:motd` line (marker and line) is replaced, by either writer,
+# and the rest of the rc file is kept.
+case_motd_rc_line_replaces_older() {
+    B=$T/lb; mkdir -p "$B" "$T/box"
+    for f in "$B/.bashrc" "$T/box/.bashrc"; do
+        printf '%s\n' 'alias ll=ls' '# min:motd (managed by min-vscode)' 'case $- in *i*) echo old ;; esac' 'export A=1' > "$f"
+    done
+    HOME=$B sh -c "$(loadout_hook 0)" < /dev/null
+    run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
+    for f in "$B/.bashrc" "$T/box/.bashrc"; do
+        [ "$(grep -c 'min:motd' "$f")" = 1 ] || fail "$f: $(cat "$f")"
+        assert_file_not_contains "$f" "echo old"
+        assert_file_contains "$f" "SSH_CONNECTION"
+        assert_file_contains "$f" "alias ll=ls"
+        assert_file_contains "$f" "export A=1"
+    done
 }
 
 # ---- ssh-config ----------------------------------------------------------------
@@ -1611,18 +1663,22 @@ assert_facts_only() {
 
 case_prep_extracts_and_prints_facts() {
     prep_script | grep -q '^echo "hostkey=' || fail "prep_script did not cut PREP out of the CLI"
-    export MINIMAL_MOTD='[ -t 1 ] && printf banner' PROMPT_COMMAND=trigger
     run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
     assert_facts_only "$T/p1"
-    assert_file_contains "$T/box/.ssh/environment" "MINIMAL_MOTD=$MINIMAL_MOTD"
-    assert_file_not_contains "$T/box/.ssh/environment" "PROMPT_COMMAND="
     assert_line_in "$(cat "$T/p1")" "hostkey=ssh-ed25519 AAAAPUB"
     assert_file "$T/box/.ssh/$TOOL/authorized_keys" "ssh-ed25519 AAAAUSER user"
     assert_mode "$T/box/$BOXD/host_ed25519" 600
     run_prep "$T/p2" || fail "second PREP failed"
     assert_log_count 1 "ssh-keygen"
     [ "$(grep -c 'min:workbench' "$T/box/.zshrc")" = 1 ] || fail "rc line repeated"
-    [ "$(grep -c 'min:motd' "$T/box/.bashrc")" = 1 ] || fail "motd rc line repeated"
+    [ "$(grep -c 'min:motd' "$T/box/.zshrc")" = 1 ] || fail "motd rc line repeated"
+    [ "$(grep -c 'min:motd' "$T/box/.bashrc")" = 1 ] || fail "motd rc line repeated in .bashrc"
+}
+
+case_prep_env_keeps_motd() {
+    PROMPT_COMMAND='eval x' MINIMAL_MOTD='echo hi' run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
+    assert_file_contains "$T/box/.ssh/environment" "MINIMAL_MOTD=echo hi"
+    assert_file_not_contains "$T/box/.ssh/environment" "PROMPT_COMMAND="
 }
 
 case_prep_waiter_keeps_lock_it_does_not_own() {
@@ -1925,7 +1981,7 @@ config_print_and_bad_option config_and_doctor_keep_entries_when_min_ls_fails mer
 merger_symlink_written_through merger_preserves_foreign_entries_vscode_put_in_block
 merger_moves_foreign_keys_out_of_block merger_upgrades_old_block merger_bad_jsonc_left_alone doctor_rows doctor_min_version
 new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes setup_remove_stops_when_config_refuses setup_through_link setup_shares_skills_with_other_tools
-loadout_rc_line_once motd_rc_line_shells
+loadout_rc_line_once loadout_env_keeps_motd prep_and_loadout_rc_lines_agree motd_rc_line_quiet_without_tty motd_rc_line_on_tty motd_rc_line_skips_attach_shell motd_rc_line_replaces_older
 sshconfig_install_creates_include_and_stanza sshconfig_remove_restores_original
 sshconfig_coexists_with_another_tool sshconfig_keeps_symlinked_config sshconfig_print_touches_nothing
 sshconfig_destroy_drops_stanza sshconfig_stale_and_invalid_dirs_skipped sshconfig_real_ssh_resolves
@@ -1937,7 +1993,7 @@ proxy_prepares_then_execs_sshd proxy_never_touches_settings_or_editor proxy_fail
 proxy_missing_takes_no_host proxy_log_capped_and_private
 proxy_prepare_write_failure prepare_writes_atomically prepare_rejects_bad_facts prepare_accepts_valid_facts
 prepare_errors_strip_control_bytes stored_user_checked_on_read proxy_rechecks_stored_paths
-prep_extracts_and_prints_facts
+prep_extracts_and_prints_facts prep_env_keeps_motd
 prep_waiter_keeps_lock_it_does_not_own prep_breaks_stale_lock prep_concurrent_runs_agree_on_host_key
 prep_regenerates_half_pair prep_keygen_failure_releases_lock prep_stale_lock_stress
 open_default_loadouts_toml_forms sshconfig_lock_held_waits_then_fails

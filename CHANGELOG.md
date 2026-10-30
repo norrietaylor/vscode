@@ -7,11 +7,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Terminals in a box print Minimal's banner (session, loadouts, `min init`
-  pointer) once per terminal: `~/.ssh/environment` keeps `MINIMAL_MOTD`
-  (still not `PROMPT_COMMAND`), and a `min:motd` rc line prints it in an
-  interactive shell on a terminal, then unsets it. A banner that does not
-  parse (only its first line reaches `~/.ssh/environment`) prints nothing.
+- Minimal's banner now shows in ssh shells: each new VS Code terminal and an
+  interactive `min-vscode ssh` session print it once, with
+  "exit or close the terminal" as the detach hint. `min session attach`
+  shells are unchanged.
 
 ### Fixed
 

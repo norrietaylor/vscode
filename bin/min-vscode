@@ -127,6 +127,7 @@ put() {
 # print the box's banner in shells that came through sshd (MINIMAL_MOTD;
 # PROMPT_COMMAND, minimald's attach trigger for it, is kept out of
 # ~/.ssh/environment, and attach shells, without SSH_CONNECTION, keep to it).
+# A `min:motd` line that differs (an older one) is replaced.
 # shellcheck disable=SC2016
 PREP='set -eu
 umask 077
@@ -160,9 +161,13 @@ done
 printf "%s\n" "$1" > "$a/authorized_keys.$$" && mv -f "$a/authorized_keys.$$" "$a/authorized_keys"
 env | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$s/environment.$$" || true
 mv -f "$s/environment.$$" "$s/environment"
+motd="case \$- in *i*) if [ -n \"\${SSH_CONNECTION:-}\" ] && [ -t 1 ] && [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"exit or close the terminal\"; eval \"\$MINIMAL_MOTD\" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   grep -qs "min:workbench" "$rc" || printf "%s\n" "# min:workbench (managed by $0)" "case \$- in *i*) if [ \"\$PWD\" = \"\$HOME\" ] && [ -d /workbench ]; then cd /workbench; fi ;; esac" >> "$rc"
-  grep -qs "min:motd" "$rc" || printf "%s\n" "# min:motd (managed by $0)" "case \$- in *i*) if [ -t 1 ] && [ -n \"\${SSH_CONNECTION:-}\" ] && [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"close the terminal\"; eval \"\$MINIMAL_MOTD\" 2>/dev/null; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac" >> "$rc"
+  if ! grep -qsF -- "$motd" "$rc"; then
+    [ ! -f "$rc" ] || { awk "/^# min:motd /{s=1;next} s{s=0;next} 1" "$rc" > "$rc.$$" && cat "$rc.$$" > "$rc"; rm -f "$rc.$$"; }
+    printf "%s\n" "# min:motd (managed by $0)" "$motd" >> "$rc"
+  fi
 done
 [ -e "$HOME/.bash_profile" ] || printf "%s\n" "[ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\"" > "$HOME/.bash_profile"
 echo "user=$(id -un)"
@@ -171,7 +176,7 @@ echo "sshd=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)"
 echo "hostkey=$(cut -d" " -f1-2 "$k.pub")"'
 
 # prepare NAME: key on the host, pubkey + host key in the box, facts on disk.
-# Also the /workbench shell line for sessions activated before the loadout.
+# Also the /workbench and banner shell lines for sessions activated before the loadout.
 # Sets $F_USER $F_HOME $F_SSHD.
 prepare() {
     valid_name "$1" || die "session name is not lowercase letters, digits and dashes; not using it: $(printf '%s' "$1" | LC_ALL=C tr -c '[:print:]' '?')"
