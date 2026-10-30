@@ -1160,18 +1160,24 @@ case_loadout_env_keeps_motd() {
 
 # Values reach ~/.ssh/environment raw (sshd does not unquote): written from
 # `env -0`, not the quoted output of GNU env (the stub); a value with a
-# newline is left out. MULTI is that value; assert_env_raw checks FILE.
-MULTI=$(printf 'one\nEVIL=two')
+# newline is left out. MULTI is that value; RAW is not UTF-8 and is kept
+# (GNU grep in a UTF-8 locale drops it). assert_env_raw checks FILE, in the
+# C locale: grep elsewhere fails on RAW's byte.
+MULTI=$(printf 'one\nEVIL=two') RAW=$(printf 'x\377y')
 assert_env_raw() {
-    assert_file_contains "$1" "FOO=a b"
-    assert_file_not_contains "$1" "FOO='"
-    assert_file_not_contains "$1" "MULTI="
-    assert_file_not_contains "$1" "EVIL="
+    (
+        LC_ALL=C; export LC_ALL
+        assert_file_contains "$1" "FOO=a b"
+        assert_file_not_contains "$1" "FOO='"
+        assert_file_not_contains "$1" "MULTI="
+        assert_file_not_contains "$1" "EVIL="
+        assert_line_in "$(cat "$1")" "RAW=$RAW"
+    )
 }
 case_loadout_env_values_raw() {
     B=$T/box; mkdir -p "$B"
     ln -s "$STUBS/env" "$T/bin/env"
-    HOME=$B FOO='a b' MULTI=$MULTI sh -c "$(loadout_hook 0)" < /dev/null
+    HOME=$B FOO='a b' MULTI=$MULTI RAW=$RAW sh -c "$(loadout_hook 0)" < /dev/null
     assert_env_raw "$B/.ssh/environment"
 }
 
@@ -1741,7 +1747,7 @@ case_prep_env_keeps_motd() {
 
 case_prep_env_values_raw() {
     ln -s "$STUBS/env" "$T/bin/env"
-    FOO='a b' MULTI=$MULTI run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
+    FOO='a b' MULTI=$MULTI RAW=$RAW run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
     assert_env_raw "$T/box/.ssh/environment"
 }
 

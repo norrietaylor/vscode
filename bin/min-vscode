@@ -131,6 +131,8 @@ put() {
 # box) shell-quotes values with spaces or metacharacters, and sshd reads the
 # file literally. Entries become lines, and a value with a newline (the file
 # holds one line per variable) is left out.
+# tr and the greps run under LC_ALL=C: in a UTF-8 locale GNU grep drops a line
+# that is not valid UTF-8 (and every line after it).
 # A `min:motd` line that differs (an older one) is replaced. bash login shells
 # (sshd's) read ~/.bash_profile: one is created that sources ~/.bashrc, or a
 # marked `min:bashrc` line is added to one that does not mention it.
@@ -165,7 +167,7 @@ while [ ! -s "$k" ] || [ ! -s "$k.pub" ]; do
   sleep 1; i=$((i + 1))
 done
 printf "%s\n" "$1" > "$a/authorized_keys.$$" && mv -f "$a/authorized_keys.$$" "$a/authorized_keys"
-env -0 | tr "\n\0" "\001\n" | grep -v "$(printf "\001")" | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$s/environment.$$" || true
+env -0 | LC_ALL=C tr "\n\0" "\001\n" | LC_ALL=C grep -v "$(printf "\001")" | LC_ALL=C grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | LC_ALL=C grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$s/environment.$$" || true
 mv -f "$s/environment.$$" "$s/environment"
 motd="case \$- in *i*) if [ -n \"\${SSH_CONNECTION:-}\" ] && [ -t 1 ] && [ -n \"\${MINIMAL_MOTD:-}\" ]; then MINIMAL_DETACH_HINT=\"exit or close the terminal\"; eval \"\$MINIMAL_MOTD\" 2>/dev/null || :; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
