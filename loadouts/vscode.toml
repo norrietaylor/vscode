@@ -37,12 +37,23 @@ patches = [
 #
 # sshd scrubs the environment, so the sshd min-vscode runs has
 # PermitUserEnvironment=yes and reads ~/.ssh/environment, written here from
-# `env` and filtered exactly as PREP filters it (PROMPT_COMMAND/MINIMAL_MOTD are
-# minimald's attach banner and break an ssh-started bash).
+# `env` and filtered exactly as PREP filters it (PROMPT_COMMAND is minimald's
+# trigger for the attach banner and breaks an ssh-started bash; MINIMAL_MOTD,
+# the banner itself, is kept for the `min:motd` rc line).
 #
-# The rc line moves an interactive shell that starts in $HOME (/home, where
-# sshd and VS Code's terminals start) to /workbench, once (the
-# `min:workbench` marker; PREP adds the same line on connect).
+# The rc lines, each added once (its marker; PREP adds the same lines on
+# connect): `min:workbench` moves an interactive shell that starts in $HOME
+# (/home, where sshd and VS Code's terminals start) to /workbench; `min:motd`
+# then prints the box's banner in an interactive shell that came through sshd
+# (SSH_CONNECTION; ~/.ssh/environment drops SSH_*, so `min session attach`,
+# whose own PROMPT_COMMAND prints it, is left alone) and whose stdout is a
+# terminal (VS Code's shell-environment probe has none, and leaves it for the
+# first terminal), with a detach hint that fits ssh, and unsets it so nested
+# shells stay quiet. A `min:motd` line that differs (an older one) is replaced.
+# ~/.ssh/environment keeps a value's first line (later lines that look like
+# NAME=... become variables of their own), so a multi-line MINIMAL_MOTD may
+# not parse: its errors go to /dev/null, and its status is dropped so an rc
+# file with `set -e` does not exit the shell.
 #
 # Guarded: a failure here must not abort the activation. Commands that do not
 # need stdin get </dev/null: the script itself arrives on the shell's stdin.
@@ -52,14 +63,29 @@ on_activate.type = "inline"
 on_activate.value = '''
 umask 077
 mkdir -p "$HOME/.ssh" </dev/null || true
-env </dev/null | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND|MINIMAL_MOTD)=" > "$HOME/.ssh/environment" || true
+env </dev/null | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$HOME/.ssh/environment" || true
+motd='case $- in *i*) if [ -n "${SSH_CONNECTION:-}" ] && [ -t 1 ] && [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="exit or close the terminal"; eval "$MINIMAL_MOTD" 2>/dev/null || :; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac'
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   if ! grep -qs "min:workbench" "$rc" </dev/null; then
     printf '%s\n' '# min:workbench (managed by min-vscode)' \
       'case $- in *i*) if [ "$PWD" = "$HOME" ] && [ -d /workbench ]; then cd /workbench; fi ;; esac' >> "$rc" </dev/null || true
   fi
+  if ! grep -qsF -- "$motd" "$rc" </dev/null; then
+    if [ -f "$rc" ]; then
+      awk '/^# min:motd /{s=1;next} s{s=0;next} 1' "$rc" > "$rc.min-vscode" </dev/null && cat "$rc.min-vscode" > "$rc" </dev/null || true
+      rm -f "$rc.min-vscode" </dev/null || true
+    fi
+    printf '%s\n' '# min:motd (managed by min-vscode)' "$motd" >> "$rc" </dev/null || true
+  fi
 done
-# bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc.
-[ -e "$HOME/.bash_profile" ] || printf '%s\n' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' > "$HOME/.bash_profile" </dev/null || true
+# bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc:
+# create one that sources it, or add the (marked) line to one that does not
+# (after a newline, if its last line has none).
+if [ ! -e "$HOME/.bash_profile" ]; then
+  printf '%s\n' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' > "$HOME/.bash_profile" </dev/null || true
+elif ! grep -Eqs '(min:bashrc|\.bashrc)' "$HOME/.bash_profile" </dev/null; then
+  [ -z "$(tail -c 1 "$HOME/.bash_profile" </dev/null)" ] || echo >> "$HOME/.bash_profile" </dev/null || true
+  printf '%s\n' '# min:bashrc (managed by min-vscode)' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' >> "$HOME/.bash_profile" </dev/null || true
+fi
 true
 '''

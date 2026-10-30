@@ -5,8 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Minimal's banner now shows in ssh shells: each new VS Code terminal and an
+  interactive `min-vscode ssh` session print it once, with
+  "exit or close the terminal" as the detach hint. `min session attach`
+  shells are unchanged.
+
 ### Fixed
 
+- Shells over ssh in a box whose `~/.bash_profile` (a user loadout's) does
+  not source `~/.bashrc` now get the `min:workbench` and `min:motd` lines
+  too: both writers add a marked `min:bashrc` line that sources it.
 - `destroy` and `gc`: a failed `min ls` after the answer no longer counts as
   the box being gone. Before, it removed the session's keys, refreshed
   settings and dropped its ssh stanza even after an `n`; now everything is
