@@ -10,7 +10,9 @@ All notable changes to this project are documented here. The format follows
 - `destroy` and `gc`: a failed `min ls` after the answer no longer counts as
   the box being gone. Before, it removed the session's keys, refreshed
   settings and dropped its ssh stanza even after an `n`; now everything is
-  kept, with a warning, and after a `y` the command exits 1.
+  kept, with a warning, and after a `y` the command exits non-zero (min's
+  own status, or 1 when min destroyed the box). Once `min ls` no longer
+  lists the box, `destroy NAME` removes what was kept.
 
 ## [0.2.0] - 2026-10-28
 
