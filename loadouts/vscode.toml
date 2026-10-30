@@ -79,10 +79,12 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   fi
 done
 # bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc:
-# create one that sources it, or add the (marked) line to one that does not.
+# create one that sources it, or add the (marked) line to one that does not
+# (after a newline, if its last line has none).
 if [ ! -e "$HOME/.bash_profile" ]; then
   printf '%s\n' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' > "$HOME/.bash_profile" </dev/null || true
 elif ! grep -Eqs '(min:bashrc|\.bashrc)' "$HOME/.bash_profile" </dev/null; then
+  [ -z "$(tail -c 1 "$HOME/.bash_profile" </dev/null)" ] || echo >> "$HOME/.bash_profile" </dev/null || true
   printf '%s\n' '# min:bashrc (managed by min-vscode)' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' >> "$HOME/.bash_profile" </dev/null || true
 fi
 true

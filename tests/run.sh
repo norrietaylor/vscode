@@ -1268,19 +1268,20 @@ case_motd_rc_line_replaces_older() {
 }
 
 # A ~/.bash_profile that does not source ~/.bashrc (sshd's bash login shell
-# reads only that) gets one marked line from either writer, once; one that
-# mentions ~/.bashrc is left alone.
+# reads only that) gets one marked line from either writer, once, on a line
+# of its own when the profile's last line has no newline; one that mentions
+# ~/.bashrc is left alone.
 # shellcheck disable=SC2016  # the rc line, literal
 case_bash_profile_sources_bashrc() {
     for w in loadout prep; do
         rm -rf "$T/box"; mkdir -p "$T/box"
-        printf 'export FOO=1\n' > "$T/box/.bash_profile"
+        printf 'export FOO=1' > "$T/box/.bash_profile"
         for _ in 1 2; do
             if [ $w = loadout ]; then HOME=$T/box sh -c "$(loadout_hook 0)" < /dev/null
             else run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"; fi
         done
         [ "$(grep -cF '. "$HOME/.bashrc"' "$T/box/.bash_profile")" = 1 ] || fail "$w .bash_profile: $(cat "$T/box/.bash_profile")"
-        assert_file_contains "$T/box/.bash_profile" "export FOO=1"
+        [ "$(head -1 "$T/box/.bash_profile")" = "export FOO=1" ] || fail "$w .bash_profile: $(cat "$T/box/.bash_profile")"
         assert_file_contains "$T/box/.bash_profile" "# min:bashrc (managed by"
         printf 'source ~/.bashrc\n' > "$T/box/.bash_profile"
         if [ $w = loadout ]; then HOME=$T/box sh -c "$(loadout_hook 0)" < /dev/null
