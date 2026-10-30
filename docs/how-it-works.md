@@ -43,7 +43,8 @@ PUBKEY`. PREP, in the box:
 - writes `authorized_keys`;
 - rewrites `~/.ssh/environment` from `env`, without `PROMPT_COMMAND`;
 - appends the `min:workbench` and `min:motd` rc lines (each unless there; an older `min:motd` line is replaced) and a `~/.bash_profile` that sources
-  `~/.bashrc`;
+  `~/.bashrc` (or, when one exists without a mention of `~/.bashrc`, a marked
+  `min:bashrc` line in it);
 - prints `user=`, `home=`, `sshd=`, `hostkey=`.
 
 The host validates every fact (they come from an untrusted box), then writes

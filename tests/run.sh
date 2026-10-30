@@ -1267,6 +1267,28 @@ case_motd_rc_line_replaces_older() {
     done
 }
 
+# A ~/.bash_profile that does not source ~/.bashrc (sshd's bash login shell
+# reads only that) gets one marked line from either writer, once; one that
+# mentions ~/.bashrc is left alone.
+# shellcheck disable=SC2016  # the rc line, literal
+case_bash_profile_sources_bashrc() {
+    for w in loadout prep; do
+        rm -rf "$T/box"; mkdir -p "$T/box"
+        printf 'export FOO=1\n' > "$T/box/.bash_profile"
+        for _ in 1 2; do
+            if [ $w = loadout ]; then HOME=$T/box sh -c "$(loadout_hook 0)" < /dev/null
+            else run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"; fi
+        done
+        [ "$(grep -cF '. "$HOME/.bashrc"' "$T/box/.bash_profile")" = 1 ] || fail "$w .bash_profile: $(cat "$T/box/.bash_profile")"
+        assert_file_contains "$T/box/.bash_profile" "export FOO=1"
+        assert_file_contains "$T/box/.bash_profile" "# min:bashrc (managed by"
+        printf 'source ~/.bashrc\n' > "$T/box/.bash_profile"
+        if [ $w = loadout ]; then HOME=$T/box sh -c "$(loadout_hook 0)" < /dev/null
+        else run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"; fi
+        assert_file "$T/box/.bash_profile" "source ~/.bashrc"
+    done
+}
+
 # ---- ssh-config ----------------------------------------------------------------
 
 case_sshconfig_install_creates_include_and_stanza() {
@@ -1999,7 +2021,7 @@ config_print_and_bad_option config_and_doctor_keep_entries_when_min_ls_fails mer
 merger_symlink_written_through merger_preserves_foreign_entries_vscode_put_in_block
 merger_moves_foreign_keys_out_of_block merger_upgrades_old_block merger_bad_jsonc_left_alone doctor_rows doctor_min_version
 new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes setup_remove_stops_when_config_refuses setup_through_link setup_shares_skills_with_other_tools
-loadout_rc_line_once loadout_env_keeps_motd prep_and_loadout_rc_lines_agree motd_rc_line_quiet_without_tty motd_rc_line_on_tty motd_rc_line_survives_errexit motd_rc_line_skips_attach_shell motd_rc_line_replaces_older
+loadout_rc_line_once loadout_env_keeps_motd prep_and_loadout_rc_lines_agree motd_rc_line_quiet_without_tty motd_rc_line_on_tty motd_rc_line_survives_errexit motd_rc_line_skips_attach_shell motd_rc_line_replaces_older bash_profile_sources_bashrc
 sshconfig_install_creates_include_and_stanza sshconfig_remove_restores_original
 sshconfig_coexists_with_another_tool sshconfig_keeps_symlinked_config sshconfig_print_touches_nothing
 sshconfig_destroy_drops_stanza sshconfig_stale_and_invalid_dirs_skipped sshconfig_real_ssh_resolves

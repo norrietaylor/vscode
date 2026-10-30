@@ -64,7 +64,7 @@ on_activate.value = '''
 umask 077
 mkdir -p "$HOME/.ssh" </dev/null || true
 env </dev/null | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -Ev "^(TERM|PWD|OLDPWD|SHLVL|_|HOME|USER|LOGNAME|PATH|SSH_[A-Z_]*|PROMPT_COMMAND)=" > "$HOME/.ssh/environment" || true
-motd='case $- in *i*) if [ -n "${SSH_CONNECTION:-}" ] && [ -t 1 ] && [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="exit or close the terminal"; eval "$MINIMAL_MOTD" 2>/dev/null || true; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac'
+motd='case $- in *i*) if [ -n "${SSH_CONNECTION:-}" ] && [ -t 1 ] && [ -n "${MINIMAL_MOTD:-}" ]; then MINIMAL_DETACH_HINT="exit or close the terminal"; eval "$MINIMAL_MOTD" 2>/dev/null || :; unset MINIMAL_MOTD MINIMAL_DETACH_HINT; fi ;; esac'
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   if ! grep -qs "min:workbench" "$rc" </dev/null; then
     printf '%s\n' '# min:workbench (managed by min-vscode)' \
@@ -78,7 +78,12 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     printf '%s\n' '# min:motd (managed by min-vscode)' "$motd" >> "$rc" </dev/null || true
   fi
 done
-# bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc.
-[ -e "$HOME/.bash_profile" ] || printf '%s\n' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' > "$HOME/.bash_profile" </dev/null || true
+# bash login shells (what sshd starts) read ~/.bash_profile, not ~/.bashrc:
+# create one that sources it, or add the (marked) line to one that does not.
+if [ ! -e "$HOME/.bash_profile" ]; then
+  printf '%s\n' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' > "$HOME/.bash_profile" </dev/null || true
+elif ! grep -Eqs '(min:bashrc|\.bashrc)' "$HOME/.bash_profile" </dev/null; then
+  printf '%s\n' '# min:bashrc (managed by min-vscode)' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' >> "$HOME/.bash_profile" </dev/null || true
+fi
 true
 '''

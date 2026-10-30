@@ -134,7 +134,9 @@ the editor-specific constants, settings keys and loadout differ.
   `min session attach` shell sources `~/.bashrc`/`~/.zshrc` too, without
   `SSH_CONNECTION`; there minimald's own `PROMPT_COMMAND` prints the banner
   with the real detach chord. Both writers replace a `min:motd` line that
-  differs.
+  differs, and add a marked `min:bashrc` line to an existing
+  `~/.bash_profile` that does not mention `~/.bashrc` (sshd starts a bash
+  login shell, which reads only that file).
 - In the box, the host key and `authorized_keys` live in `~/.ssh/min-vscode/`.
 - Without a terminal, `min session destroy` refuses a box with unsaved
   changes ("refusing to destroy the session without confirmation; pass
