@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- `destroy` and `gc`: a failed `min ls` after the answer no longer counts as
+  the box being gone. Before, it removed the session's keys, refreshed
+  settings and dropped its ssh stanza even after an `n`; now everything is
+  kept, with a warning, and after a `y` the command exits 1.
+
 ## [0.2.0] - 2026-10-28
 
 Rebuilt as the VS Code twin of min-cursor: a VS Code extension is now the
