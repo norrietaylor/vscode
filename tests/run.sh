@@ -1158,6 +1158,29 @@ case_loadout_env_keeps_motd() {
     assert_file_not_contains "$B/.ssh/environment" "PROMPT_COMMAND="
 }
 
+# Values reach ~/.ssh/environment raw (sshd does not unquote): written from
+# `env -0`, not the quoted output of GNU env (the stub); a value with a
+# newline is left out. MULTI is that value; RAW is not UTF-8 and is kept
+# (GNU grep in a UTF-8 locale drops it). assert_env_raw checks FILE, in the
+# C locale: grep elsewhere fails on RAW's byte.
+MULTI=$(printf 'one\nEVIL=two') RAW=$(printf 'x\377y')
+assert_env_raw() {
+    (
+        LC_ALL=C; export LC_ALL
+        assert_file_contains "$1" "FOO=a b"
+        assert_file_not_contains "$1" "FOO='"
+        assert_file_not_contains "$1" "MULTI="
+        assert_file_not_contains "$1" "EVIL="
+        assert_line_in "$(cat "$1")" "RAW=$RAW"
+    )
+}
+case_loadout_env_values_raw() {
+    B=$T/box; mkdir -p "$B"
+    ln -s "$STUBS/env" "$T/bin/env"
+    HOME=$B FOO='a b' MULTI=$MULTI RAW=$RAW sh -c "$(loadout_hook 0)" < /dev/null
+    assert_env_raw "$B/.ssh/environment"
+}
+
 # PREP and the loadout write the same rc lines, so either may come first.
 case_prep_and_loadout_rc_lines_agree() {
     mkdir -p "$T/box" "$T/lb"
@@ -1193,7 +1216,7 @@ on_tty() {
 
 # On a terminal over ssh the banner prints once, with the ssh detach hint in
 # place of the attach one, and is unset. A MINIMAL_MOTD that does not parse
-# (~/.ssh/environment keeps only a value's first line) prints nothing, not a
+# prints nothing, not a
 # syntax error in every shell.
 case_motd_rc_line_on_tty() {
     command -v script >/dev/null 2>&1 || return 0
@@ -1722,6 +1745,12 @@ case_prep_env_keeps_motd() {
     assert_file_not_contains "$T/box/.ssh/environment" "PROMPT_COMMAND="
 }
 
+case_prep_env_values_raw() {
+    ln -s "$STUBS/env" "$T/bin/env"
+    FOO='a b' MULTI=$MULTI RAW=$RAW run_prep "$T/p1" || fail "PREP failed: $(cat "$T/p1.err")"
+    assert_env_raw "$T/box/.ssh/environment"
+}
+
 case_prep_waiter_keeps_lock_it_does_not_own() {
     mkdir -p "$T/box/$BOXD/.keygen"
     MIN_KEYGEN_WAIT=2 run_prep "$T/p1"
@@ -2022,7 +2051,7 @@ config_print_and_bad_option config_and_doctor_keep_entries_when_min_ls_fails mer
 merger_symlink_written_through merger_preserves_foreign_entries_vscode_put_in_block
 merger_moves_foreign_keys_out_of_block merger_upgrades_old_block merger_bad_jsonc_left_alone doctor_rows doctor_min_version
 new_empty_no_window attach_no_window destroy_if_idle destroy_unsaved_needs_force status_json setup_installs_follows_and_removes setup_remove_stops_when_config_refuses setup_through_link setup_shares_skills_with_other_tools
-loadout_rc_line_once loadout_env_keeps_motd prep_and_loadout_rc_lines_agree motd_rc_line_quiet_without_tty motd_rc_line_on_tty motd_rc_line_survives_errexit motd_rc_line_skips_attach_shell motd_rc_line_replaces_older bash_profile_sources_bashrc
+loadout_rc_line_once loadout_env_keeps_motd loadout_env_values_raw prep_and_loadout_rc_lines_agree motd_rc_line_quiet_without_tty motd_rc_line_on_tty motd_rc_line_survives_errexit motd_rc_line_skips_attach_shell motd_rc_line_replaces_older bash_profile_sources_bashrc
 sshconfig_install_creates_include_and_stanza sshconfig_remove_restores_original
 sshconfig_coexists_with_another_tool sshconfig_keeps_symlinked_config sshconfig_print_touches_nothing
 sshconfig_destroy_drops_stanza sshconfig_stale_and_invalid_dirs_skipped sshconfig_real_ssh_resolves
@@ -2034,7 +2063,7 @@ proxy_prepares_then_execs_sshd proxy_never_touches_settings_or_editor proxy_fail
 proxy_missing_takes_no_host proxy_log_capped_and_private
 proxy_prepare_write_failure prepare_writes_atomically prepare_rejects_bad_facts prepare_accepts_valid_facts
 prepare_errors_strip_control_bytes stored_user_checked_on_read proxy_rechecks_stored_paths
-prep_extracts_and_prints_facts prep_env_keeps_motd
+prep_extracts_and_prints_facts prep_env_keeps_motd prep_env_values_raw
 prep_waiter_keeps_lock_it_does_not_own prep_breaks_stale_lock prep_concurrent_runs_agree_on_host_key
 prep_regenerates_half_pair prep_keygen_failure_releases_lock prep_stale_lock_stress
 open_default_loadouts_toml_forms sshconfig_lock_held_waits_then_fails

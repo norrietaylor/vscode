@@ -14,6 +14,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Variables whose values hold spaces or shell metacharacters now reach ssh
+  shells in a box as they are, so Minimal's banner shows there. The box's
+  GNU `env` (coreutils 9.12) shell-quotes such values and sshd reads
+  `~/.ssh/environment` literally, so they kept the quotes; PREP and the
+  loadout now write the file from `env -0`, and leave out a value with a
+  newline.
 - Shells over ssh in a box whose `~/.bash_profile` (a user loadout's) does
   not source `~/.bashrc` now get the `min:workbench` and `min:motd` lines
   too: both writers add a marked `min:bashrc` line that sources it.
