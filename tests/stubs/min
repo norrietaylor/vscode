@@ -2,6 +2,7 @@
 # Stub for min: logs argv (multi-line args collapsed to <script>), serves fixtures.
 # $FIXTURES/ls.fail-from N: `min ls` fails from its Nth call on (ls.calls counts).
 # $FIXTURES/ls.fail-at N: only the Nth `min ls` fails.
+# destroy takes a session's id or name (min resolves an id first).
 line="min"
 for a in "$@"; do
     case $a in
@@ -25,7 +26,7 @@ case "${1:-} ${2:-}" in
         [ -f "$FIXTURES/sessions.after.json" ] && cp "$FIXTURES/sessions.after.json" "$FIXTURES/sessions.json"
         exit 0 ;;
     "session exec")
-        # prepare: min session exec NAME sh -c PREP TOOL PUBKEY
+        # prepare: min session exec ID sh -c PREP TOOL PUBKEY
         # anything else (the _proxy sshd argv): echo it, as the ssh byte stream
         if [ "${4:-}" = sh ]; then
             printf '%s' "$8" > "$STUB_LOG.pubkey"
@@ -42,7 +43,7 @@ case "${1:-} ${2:-}" in
             echo "error: refusing to destroy the session without confirmation; pass --force" >&2; exit 1
         fi
         if [ "$rc" = 0 ]; then
-            jq --arg n "$3" '.sessions |= map(select(.name != $n))' "$FIXTURES/sessions.json" > "$FIXTURES/sessions.tmp" \
+            jq --arg n "$3" '.sessions |= map(select(.name != $n and .id != $n))' "$FIXTURES/sessions.json" > "$FIXTURES/sessions.tmp" \
                 && mv "$FIXTURES/sessions.tmp" "$FIXTURES/sessions.json"
         fi
         exit "$rc" ;;

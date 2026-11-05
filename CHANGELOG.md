@@ -11,9 +11,29 @@ All notable changes to this project are documented here. The format follows
   interactive `min-vscode ssh` session print it once, with
   "exit or close the terminal" as the detach hint. `min session attach`
   shells are unchanged.
+- **Boxes are reached by id** (min 0.8,
+  [gominimal/minimal#2756](https://github.com/gominimal/minimal/pull/2756),
+  lets boxes share a name and resolves a name to the running box):
+  min-vscode records each box's id in `STATE/sessions/NAME/id` and passes
+  it to every `min session exec` and `destroy`, so another tool's box of
+  the same name is never reached under min-vscode's record or by a name
+  min-vscode chose (the CLI's lists, the Minimal view, ssh stanzas,
+  settings entries; `status --json` now carries each `id` and whether it is
+  the `recorded` one); a box you name explicitly becomes min-vscode's once
+  it connects. A key dir from before takes the id of the
+  one box with its name; when several share it, min-vscode leaves them
+  alone and `doctor` says so.
 
 ### Fixed
 
+- The Minimal view's Destroy, Clean up and open no longer reach another
+  tool's box from a stale row: the extension passes `--own`, and the CLI
+  refuses a name whose recorded id min no longer lists under it. Destroy
+  and Clean up (and `gc`) also leave a box whose key dir has no recorded
+  id yet (from before ids) alone until it has been attached once.
+- A `min ls` that exits 0 with output that is not one session list (a
+  warning line first, or nothing) now counts as a failed one: nothing of
+  min-vscode's is pruned.
 - Shells over ssh in a box whose `~/.bash_profile` (a user loadout's) does
   not source `~/.bashrc` now get the `min:workbench` and `min:motd` lines
   too: both writers add a marked `min:bashrc` line that sources it.

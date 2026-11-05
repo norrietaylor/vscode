@@ -44,8 +44,9 @@ The command prints `min-vscode.NAME`, so `ssh "$(min-vscode open)"` works too.
 
 Recent folders in VS Code's welcome page and the Remote Explorer reconnect
 the same way: every connection goes through `min-vscode _proxy NAME`, which
-prepares the box again first, so a session recreated under the same name
-heals itself.
+prepares the box again first, so a box min-vscode recreated under the same
+name heals itself (min-vscode reaches its box by the id it recorded, never
+another box that took the name: [Box ids](how-it-works.md#box-ids)).
 
 ## VS Code's Remote-SSH and a box
 

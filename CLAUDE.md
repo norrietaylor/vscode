@@ -14,7 +14,7 @@ the editor-specific constants, settings keys and loadout differ.
 |---|---|
 | `bin/min-vscode` | tool constants, then the transport/ssh/session plumbing, then the client layer, whose first block holds every editor-specific constant |
 | plumbing | transport, PREP/prepare, `stored_path`, ssh options and stanzas, `ssh-config`, `_proxy`, `ssh`, naming, `activate_session`, `destroy_one`, `in_use_names`/`box_in_use`, `track_orphans`, `default_loadouts`, the ssh-config record, report helpers; editor-neutral, reaching the client layer only through its hooks |
-| client layer | `open`/`new`/`attach` (session, stanza, settings, `code --remote` unless `--no-window`; `new --empty`), `destroy` (`--if-idle`), `gc`, `status` (`--json`), `doctor`, `completions`, `config`, `setup`, hidden `_sessions`; hooks `client_on_connect` and `client_on_destroy` (settings sync) |
+| client layer | `open`/`new`/`attach` (session, stanza, settings, `code --remote` unless `--no-window`; `new --empty`), `attach`/`destroy` hidden `--own` (the extension's), `destroy` (`--if-idle`), `gc`, `status` (`--json`), `doctor`, `completions`, `config`, `setup`, hidden `_sessions`; hooks `client_on_connect` and `client_on_destroy` (settings sync) |
 | `bin/min-vscode-config` | python3: marked-block merge of per-host `remote.SSH.remotePlatform` and `remote.SSH.useLocalServer: false` into VS Code's user settings.json; `--install`, `--sync NAME...`, `--remove`, `--doctor`, `--dry-run` |
 | `loadouts/vscode.toml`, `loadouts/vscode/` | `openssh curl rsync xxhash git`; sshd env prep; `min:workbench` and `min:motd` rc lines; patches copying `vscode/skills/minimal-sandbox` to `~/.copilot/skills` and `~/.claude/skills` in the box. `setup` copies `vscode/` beside the linked toml: `$LOADOUT_ROOT` must be a real directory |
 | `skills/`, `loadouts/vscode/skills/` | Minimal's skills, vendored from gominimal/minimal-skills (MIT) at a pinned commit by `just skills`: the host ones (`setup` copies them into the Mac's `~/.copilot/skills` and `~/.claude/skills`, marked `.min-vscode-copy`, never over a dir with no `.min-*-copy` mark; one another min tool marked is shared, keeping its mark, and `--remove` deletes it only once no other mark is left) and `minimal-sandbox` (box only: the host ones teach commands a box lacks) |
@@ -33,13 +33,15 @@ the editor-specific constants, settings keys and loadout differ.
 - Host alias is `min-vscode.NAME` (`HOST_PREFIX`); nothing hard-codes the
   prefix length (the long-prefix test run guards it).
 - `prepare` re-pins the host key and re-pushes the public key on every
-  `open`/`attach`/`ssh`/`_proxy`, so a recreated session self-heals.
+  `open`/`attach`/`ssh`/`_proxy`, so a box min-vscode recreated self-heals;
+  it never replaces a recorded id with another.
   `_proxy` always runs `prepare` and writes nothing to stdout before `exec`
   (stdout is the SSH byte stream). `_proxy` and `prepare` never call client
   hooks, never touch settings.json.
 - `ssh-config` is an opt-in gate: nothing under `~/.ssh` is touched until it
   has run. `ssh-config --remove` leaves `~/.ssh/config` byte-identical to
-  before install; `--print` writes nothing. Other tools' Include lines are
+  before install; `--print` writes nothing (`PICK_NOADOPT`: not even a
+  legacy key dir's adopted id). Other tools' Include lines are
   never touched.
 - `config` is the same kind of gate for settings.json: `--sync` is a no-op
   until `config` has run (`STATE/settings-installed`). The merger keeps the
@@ -60,19 +62,66 @@ the editor-specific constants, settings keys and loadout differ.
 - `gc` and `destroy` never destroy without an explicit y; `-y` is the only
   way past `destroy`'s question.
 - A box is gone (keys, records and stanza dropped, `client_on_destroy` run
-  by `destroy_one`) only when a successful `min ls` no longer lists it; a
+  by `destroy_one`) only when a successful `min ls` no longer lists its id; a
   failed `min ls` keeps everything (ssh-config not rewritten), warns, and
   after a y exits non-zero; `destroy NAME` drops what was kept once a
-  successful `min ls` no longer lists NAME.
-- `gc` offers only own sessions (`own_ls`: a key dir `STATE/sessions/NAME`),
+  successful `min ls` no longer lists the recorded id, even while another
+  box holds the name (a key dir with no id: once no box is named NAME).
+  `min_ls` fails on output that is not exactly one object whose `sessions`
+  is an array of objects (a warning or JSON log line, none at all), and
+  `own_filter` fails with its jq, so neither ever reads as "no box".
+- Every min call aimed at one box passes its id, never its name (min 0.8
+  resolves a name to whichever box holds it): `session exec` (prepare,
+  `_proxy`'s exec, `proxy_command`) and `session destroy` (`destroy_one`).
+  The id is `STATE/sessions/NAME/id` (`activate_session`: the one id new in
+  `min ls`, named NAME with `-n`, else for PATH; `prepare` writes it with
+  the facts), checked against `ID_ERE` on every read (`stored_id`) before it
+  reaches a command line or a stanza. `pick_id`/`box_id` resolve NAME: own
+  (the recorded id, listed under NAME); a key dir with no `id` adopts the
+  one box named NAME (and writes it, except under `PICK_NOADOPT=1`, which
+  `ssh-config`, `config`, `setup` (all their forms), `status`, `_sessions`
+  and `doctor` set, and `own_filter` (so `gc`'s list) always uses: they act on no
+  one box, and count it own without writing; only the box that
+  open/attach/ssh/`_proxy` acts on adopts, never another key dir on the
+  way; `destroy` never writes an id (it runs under `PICK_NOADOPT`: an N or
+  an exit 3 leaves none behind), and `destroy --own`, cwd `destroy` and
+  `gc` refuse or skip a key dir with no id rather than adopt and destroy in
+  one step); a jq
+  failure on the listing (`pick_id` 8, "could not read min ls") or
+  several boxes named NAME, none recorded, a bad `id` file, or one
+  listed box named NAME with no usable id (`pick_id` 7): no id
+  (`box_id` status 2, `BWHY`), so an explicit NAME dies saying why, `doctor`
+  warns, it is not own and gets no stanza or settings entry; never a
+  by-name call. A recorded id is never traded for a box found by name: ours
+  gone (id unlisted; `pick_id` 5) with another box named NAME is `box_id`
+  status 5, "your box NAME is gone": `destroy NAME` drops only our keys and
+  records, everything else refuses; ours listed under another name
+  (`pick_id` 6) is refused everywhere. A NAME chosen from the own list (the
+  cwd, the `attach` picker, and the extension's view: hidden `--own` on
+  `attach` and `destroy`) resolves with `own`; with `--own`, a NAME that is
+  no own box any more dies ("NAME is not a box of min-vscode's", or `BWHY`),
+  and `destroy --own`, or `destroy` with no NAME (cwd lookup), on a key dir
+  with no id dies too; Clean up offers only `own && recorded` rows
+  (`status --json`'s `recorded`: `sessions/NAME/id` holds the row's id). A failed `min ls`
+  keeps every stanza but a bad-id one. An explicit NAME that is not own and has
+  no recorded id reaches the one box of that name (`attach`, `ssh`, `open
+  -n`, `destroy`), refused when several share it; `_proxy NAME` only an own
+  box, or the one box of that name when there is no key dir at all (a
+  stanza of a box of ours that is gone never reaches the box that took its
+  name). Helpers reading one session (`id_field`, `ls_lists`) select by id.
+- `gc` offers only own sessions (`own_ls`: a key dir `STATE/sessions/NAME`
+  whose recorded id `min ls` lists under NAME; `status --json` gives `id`),
   and `gc`/`status` date only those in `orphan/` (`track_orphans`, each run);
   boxes made by `min` alone are never listed. The same holds wherever a
   session is chosen for the user: `open`'s reuse of a live session for PATH,
   `destroy`'s cwd lookup, the `attach` picker and `_sessions` (completions).
-  Only an explicit NAME (`attach NAME`, `destroy NAME`, `open -n NAME`) may
+  Only an explicit NAME (`attach NAME`, `ssh NAME`, `destroy NAME`, `open -n NAME`) may
   reach another tool's box.
-- In use = some host process runs `min session exec NAME ... sshd` (any ssh
-  client's connection). Never contact a box without such a live process: a
+- In use = some host process runs `min session exec X ... sshd` (any ssh
+  client's connection); X is an id or a bare name (connections from before
+  ids, other tools); an own box counts by its name or its id wherever in
+  use is asked (`status`, `track_orphans`, `gc`'s list and re-check,
+  `destroy --if-idle`). Never contact a box without such a live process: a
   connect starts a stopped box.
 - `gc` re-checks `gc_still_idle` before each question.
 - `config`/doctor never prune on a failed `min ls`. `--remove` restores the
@@ -90,15 +139,27 @@ the editor-specific constants, settings keys and loadout differ.
   file (a checkout or an older extension dir); stanzas bake the
   `~/.local/bin` link, so it follows the extension across updates.
 - The extension never decides a destroy itself: a modal's destructive button
-  is the explicit y (`destroy -y`); unsaved changes (exit 4, min refused
+  is the explicit y (`destroy -y`); every `destroy` and `attach` it sends
+  carries `--own` (a test greps for it), so a stale row reaches no box but
+  one whose recorded id min lists under its name (an `attach` may still
+  adopt a legacy key dir's one box, the documented adoption risk; a
+  `destroy` never does); unsaved changes (exit 4, min refused
   without a terminal) need a second modal before `destroy -y --force`;
   clean-up calls `destroy -y --if-idle`, which re-checks `gc_still_idle`
   (exit 3 when in use). It lists only own sessions, runs `setup` on startup
   only once `~/.ssh/min-vscode.conf` exists, and prunes VS Code's recent list
-  only from a successful `status --json`.
+  only from a successful `status --json`, keeping the names of own boxes.
 
 ## External facts that bite
 
+- min 0.8.0-dev.381 ([gominimal/minimal#2756](https://github.com/gominimal/minimal/pull/2756),
+  BOX-004/005): a session name is an alias many boxes may share. A stopped
+  box keeps its name, and `min ls` still lists it, but it doesn't stop a
+  new box from taking the name; only a running box (or a resume in flight)
+  does (minimald's `claim_name`/`running_name_holder`). A name resolves to
+  the running box, else the latest. `session exec`, `attach`, `destroy`, `rename` and `policy` take a
+  full session id first (`SessionLookup::parse`), and `min ls --json` gives
+  each session's `id` (lowercase hex UUID) and `name`.
 - `min` is a zsh function on the host; `MIN_BIN` is resolved to an absolute
   path and baked into each stanza (VS Code spawns ssh with the launchd PATH).
 - Without `code` on PATH, `bin/min-vscode` uses the app's own

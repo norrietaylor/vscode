@@ -60,19 +60,31 @@ setup() {
     default_fixtures
 }
 
+# The fixtures' session ids (min ls --json `id`): every min call aimed at an
+# own box passes its id, never its name.
+ID_A=aaaaaaaa-0000-4000-8000-00000000000a   # alpha
+ID_B=bbbbbbbb-0000-4000-8000-00000000000b   # beta
+ID_F=ffffffff-0000-4000-8000-00000000000f   # foreign (another tool's)
+ID_G=cccccccc-0000-4000-8000-00000000000c   # gamma
+ID_S=dddddddd-0000-4000-8000-00000000000d   # stopped
+# id_of NAME: the id sessions_after gives a new session NAME (one per name,
+# so a second activation is a new id too)
+id_of() { printf '%08x-0000-4000-8000-%012x' "$(printf '%s' "$1" | cksum | cut -d' ' -f1)" "${#1}"; }
+
 default_fixtures() {
     cat > "$FIXTURES/sessions.json" <<JSON
-{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active","git":{"branch":"main"},"attrs":null}]}
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active","git":{"branch":"main"},"attrs":null}]}
 JSON
     printf 'user=box\nhome=/home\nsshd=/usr/sbin/sshd\nhostkey=ssh-ed25519 AAAAFAKE\n' > "$FIXTURES/facts.txt"
     : > "$FIXTURES/ps.txt"
 }
 
-# sessions_after NAME DIR: activate will add session NAME for DIR (alpha stays).
+# sessions_after NAME DIR: activate will add session NAME (id: id_of NAME)
+# for DIR (alpha stays).
 sessions_after() {
     cat > "$FIXTURES/sessions.after.json" <<JSON
-{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active","git":{"branch":"main"},"attrs":null},
- {"id":"ID-N","name":"$1","project_path":"$2","status":"active","git":{"branch":"main"},"attrs":null}]}
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active","git":{"branch":"main"},"attrs":null},
+ {"id":"$(id_of "$1")","name":"$1","project_path":"$2","status":"active","git":{"branch":"main"},"attrs":null}]}
 JSON
 }
 
@@ -185,9 +197,9 @@ case_open_activates_and_launches_editor() {
     d=$STATE/sessions/proj-amber
     assert_log_contains "min session activate --no-prompt --loadout vscode $P"
     pub=$(cat "$d/id_ed25519.pub")
-    assert_log_contains "min session exec proj-amber sh -c <script> $TOOL $pub"
+    assert_log_contains "min session exec $(id_of proj-amber) sh -c <script> $TOOL $pub"
     assert_log_contains "code --remote ssh-remote+${HP}proj-amber /workbench"
-    assert_log_before "min session exec proj-amber sh -c" "code --remote"
+    assert_log_before "min session exec $(id_of proj-amber) sh -c" "code --remote"
     assert_file "$d/known_hosts" "${HP}proj-amber ssh-ed25519 AAAAFAKE"
     assert_file "$HOME/$CONF" "$(conf_expected alpha proj-amber)"
     assert_file "$STATE/created/proj-amber"
@@ -209,13 +221,13 @@ case_open_reuses_live_session_for_path() {
 case_open_skips_foreign_session_for_path() {
     installed
     cat > "$FIXTURES/sessions.json" <<JSON
-{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"},
- {"id":"ID-F","name":"foreign","project_path":"$P","status":"active"}]}
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$ID_F","name":"foreign","project_path":"$P","status":"active"}]}
 JSON
     cat > "$FIXTURES/sessions.after.json" <<JSON
-{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"},
- {"id":"ID-F","name":"foreign","project_path":"$P","status":"active"},
- {"id":"ID-N","name":"proj-amber","project_path":"$P","status":"active"}]}
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$ID_F","name":"foreign","project_path":"$P","status":"active"},
+ {"id":"$(id_of proj-amber)","name":"proj-amber","project_path":"$P","status":"active"}]}
 JSON
     reset_log
     run open "$P"
@@ -273,7 +285,7 @@ case_attach_launches_existing() {
     reset_log
     run attach alpha
     assert_rc 0
-    assert_log_contains "min session exec alpha sh -c <script>"
+    assert_log_contains "min session exec $ID_A sh -c <script>"
     assert_log_contains "code --remote ssh-remote+${HP}alpha /workbench"
     assert_log_not_contains "session activate"
     run attach nope
@@ -294,8 +306,8 @@ case_attach_picker_uses_shown_list() {
     installed
     own alpha
     cat > "$FIXTURES/sessions.json" <<JSON
-{"sessions":[{"id":"ID-F","name":"foreign","project_path":"$P","status":"active"},
- {"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"}]}
+{"sessions":[{"id":"$ID_F","name":"foreign","project_path":"$P","status":"active"},
+ {"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"}]}
 JSON
     reset_log
     python3 - "$BIN" "$STATE/sessions/foreign" > "$T/out" 2> "$T/err" <<'PY'
@@ -322,7 +334,7 @@ sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
 PY
     RC=$?
     assert_rc 0
-    assert_log_contains "min session exec alpha sh -c <script>"
+    assert_log_contains "min session exec $ID_A sh -c <script>"
     assert_log_not_contains "min session exec foreign"
 }
 
@@ -396,7 +408,7 @@ case_destroy_asks_and_cleans_up() {
     run_stdin 'y
 ' destroy alpha
     assert_rc 0
-    assert_log_contains "min session destroy alpha"
+    assert_log_contains "min session destroy $ID_A"
     assert_no_file "$STATE/sessions/alpha"
     assert_no_file "$STATE/kept/alpha"
     assert_file "$HOME/$CONF" "$(conf_expected)"
@@ -406,7 +418,7 @@ case_destroy_by_cwd() {
     alpha_facts
     (cd "$AP" && sh "$BIN" destroy -y > "$T/out" 2> "$T/err" < /dev/null); RC=$?
     assert_rc 0
-    assert_log_contains "min session destroy alpha"
+    assert_log_contains "min session destroy $ID_A"
     (cd "$P" && sh "$BIN" destroy -y > "$T/out" 2> "$T/err" < /dev/null); RC=$?
     assert_rc 1
     assert_err_contains "no session for $P; pass NAME"
@@ -433,7 +445,7 @@ case_destroy_ls_fails_keeps_keys() {
     run_stdin 'y
 ' destroy alpha
     assert_rc 1
-    assert_log_contains "min session destroy alpha"
+    assert_log_contains "min session destroy $ID_A"
     assert_err_contains "min ls failed, so whether alpha is gone is unknown"
     [ -d "$STATE/sessions/alpha" ] || fail "alpha's keys removed after a failed ls"
     assert_file "$HOME/$CONF" "$(conf_expected alpha)"
@@ -462,40 +474,51 @@ case_destroy_ls_fails_once_keeps_stanza() {
     printf 2 > "$FIXTURES/ls.fail-at"
     run destroy -y alpha
     assert_rc 1
-    assert_log_contains "min session destroy alpha"
+    assert_log_contains "min session destroy $ID_A"
     assert_err_contains "min ls failed, so whether alpha is gone is unknown"
     [ -d "$STATE/sessions/alpha" ] || fail "alpha's keys removed after a failed ls"
     assert_file "$HOME/$CONF" "$(conf_expected alpha)"
 }
 
-# own NAME...: sessions this tool has prepared (a key dir), the only ones gc offers.
-own() { for o in "$@"; do mkdir -p "$STATE/sessions/$o"; done; }
+# own NAME...: sessions this tool has prepared (a key dir, with the fixture's
+# id recorded for a fixture name), the only ones gc offers. own_legacy
+# NAME...: a key dir from before ids (no id file).
+own() {
+    for o in "$@"; do
+        mkdir -p "$STATE/sessions/$o"
+        case $o in
+            alpha) oi=$ID_A ;; beta) oi=$ID_B ;; gamma) oi=$ID_G ;; stopped) oi=$ID_S ;; *) oi= ;;
+        esac
+        [ -z "$oi" ] || printf '%s\n' "$oi" > "$STATE/sessions/$o/id"
+    done
+}
+own_legacy() { for o in "$@"; do mkdir -p "$STATE/sessions/$o"; done; }
 
 # destroy without NAME looks only at own sessions for the cwd: another tool's
 # box for the same directory is neither picked nor counted.
 case_destroy_by_cwd_only_own() {
     own beta
     cat > "$FIXTURES/sessions.json" <<JSON
-{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"},
- {"id":"ID-B","name":"beta","project_path":"$AP","status":"active"}]}
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$ID_B","name":"beta","project_path":"$AP","status":"active"}]}
 JSON
     (cd "$AP" && sh "$BIN" destroy -y > "$T/out" 2> "$T/err" < /dev/null); RC=$?
     assert_rc 0
-    assert_log_contains "min session destroy beta"
-    assert_log_not_contains "min session destroy alpha"
+    assert_log_contains "min session destroy $ID_B"
+    assert_log_not_contains "min session destroy $ID_A"
     (cd "$AP" && sh "$BIN" destroy -y > "$T/out" 2> "$T/err" < /dev/null); RC=$?
     assert_rc 1
     assert_err_contains "no session for $AP; pass NAME"
-    assert_log_not_contains "min session destroy alpha"
+    assert_log_not_contains "min session destroy $ID_A"
 }
 
 orphan_sessions() {
     own alpha beta gamma stopped
     cat > "$FIXTURES/sessions.json" <<JSON
-{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"},
- {"id":"ID-B","name":"beta","project_path":"$T/beta-proj","status":"active"},
- {"id":"ID-G","name":"gamma","project_path":"$T/gamma-proj","status":"active"},
- {"id":"ID-S","name":"stopped","project_path":"$T/s","status":"stopped"}]}
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$ID_B","name":"beta","project_path":"$T/beta-proj","status":"active"},
+ {"id":"$ID_G","name":"gamma","project_path":"$T/gamma-proj","status":"active"},
+ {"id":"$ID_S","name":"stopped","project_path":"$T/s","status":"stopped"}]}
 JSON
 }
 age() { mkdir -p "$STATE/orphan"; printf '%s' "$(($(date +%s) - $2))" > "$STATE/orphan/$1"; }
@@ -543,9 +566,9 @@ n
 q
 ' gc
     assert_rc 0
-    assert_log_contains "min session destroy gamma"
-    assert_log_not_contains "min session destroy beta"
-    assert_log_not_contains "min session destroy alpha"
+    assert_log_contains "min session destroy $ID_G"
+    assert_log_not_contains "min session destroy $ID_B"
+    assert_log_not_contains "min session destroy $ID_A"
     assert_file "$STATE/kept/beta"
     assert_err_contains "[y/N/q]"
     run gc --older-than x
@@ -561,7 +584,7 @@ case_gc_ls_fails_keeps_keys() {
 q
 ' gc
     assert_rc 1
-    assert_log_contains "min session destroy gamma"
+    assert_log_contains "min session destroy $ID_G"
     assert_err_contains "min ls failed, so whether gamma is gone is unknown"
     [ -d "$STATE/sessions/gamma" ] || fail "gamma's keys removed after a failed ls"
     assert_file "$STATE/orphan/gamma"
@@ -582,8 +605,8 @@ y
 y
 ' gc
     assert_rc 0
-    assert_log_contains "min session destroy beta"
-    assert_log_not_contains "min session destroy gamma"
+    assert_log_contains "min session destroy $ID_B"
+    assert_log_not_contains "min session destroy $ID_G"
     ! grep -q gamma "$T/out" "$T/err" || fail "gamma mentioned by gc"
 }
 
@@ -910,7 +933,7 @@ case_new_empty_no_window() {
     assert_rc 0
     assert_out_eq "${HP}box-amber"
     assert_log_contains "min session activate --no-prompt --sync none --loadout vscode $STATE/box"
-    assert_log_contains "min session exec box-amber sh -c <script>"
+    assert_log_contains "min session exec $(id_of box-amber) sh -c <script>"
     assert_log_not_contains "code --remote"
     run new --empty "$P"
     assert_rc 1
@@ -926,7 +949,7 @@ case_attach_no_window() {
     run attach alpha --no-window
     assert_rc 0
     assert_out_eq "${HP}alpha"
-    assert_log_contains "min session exec alpha sh -c <script>"
+    assert_log_contains "min session exec $ID_A sh -c <script>"
     assert_log_not_contains "code --remote"
     run attach --no-window alpha
     assert_rc 0
@@ -944,7 +967,7 @@ case_destroy_if_idle() {
     assert_log_not_contains "session destroy"
     run destroy --if-idle -y beta
     assert_rc 0
-    assert_log_contains "min session destroy beta"
+    assert_log_contains "min session destroy $ID_B"
     run destroy -z beta
     assert_rc 1
 }
@@ -965,15 +988,15 @@ case_destroy_unsaved_needs_force() {
     reset_log
     run destroy -y --force alpha
     assert_rc 0
-    assert_log_contains "min session destroy alpha --force"
+    assert_log_contains "min session destroy $ID_A --force"
     assert_no_file "$STATE/sessions/alpha"
 }
 
 case_status_json() {
     orphan_sessions
     rm -rf "$STATE/sessions/gamma"
-    jq --arg sb "$STATE/box" '.sessions += [{"id":"ID-Y","name":"box-amber","project_path":$sb,"status":"active"},
-        {"id":"ID-X","name":"Bad Name","project_path":"/x","status":"active"}]' "$FIXTURES/sessions.json" > "$T/s.json" \
+    jq --arg sb "$STATE/box" '.sessions += [{"id":"eeeeeeee-0000-4000-8000-00000000000e","name":"box-amber","project_path":$sb,"status":"active"},
+        {"id":"22222222-0000-4000-8000-000000000002","name":"Bad Name","project_path":"/x","status":"active"}]' "$FIXTURES/sessions.json" > "$T/s.json" \
         && cp "$T/s.json" "$FIXTURES/sessions.json"
     own box-amber
     exec_line 101 1 alpha
@@ -982,7 +1005,7 @@ case_status_json() {
     assert_rc 0
     j=$(cat "$T/out")
     [ "$(printf '%s' "$j" | jq -r 'map(.name) | join(" ")')" = "alpha beta gamma stopped box-amber" ] || fail "names: $j"
-    [ "$(printf '%s' "$j" | jq -c '.[0]')" = "{\"name\":\"alpha\",\"status\":\"active\",\"project\":\"$AP\",\"own\":true,\"empty\":false,\"in_use\":true,\"idle\":null}" ] \
+    [ "$(printf '%s' "$j" | jq -c '.[0]')" = "{\"name\":\"alpha\",\"id\":\"$ID_A\",\"status\":\"active\",\"project\":\"$AP\",\"own\":true,\"recorded\":true,\"empty\":false,\"in_use\":true,\"idle\":null}" ] \
         || fail "alpha: $(printf '%s' "$j" | jq -c '.[0]')"
     b=$(printf '%s' "$j" | jq '.[1].idle')
     [ "$b" -ge 7200 ] && [ "$b" -lt 7260 ] || fail "beta idle: $b"
@@ -1520,9 +1543,9 @@ case_proxy_prepares_then_execs_sshd() {
     assert_rc 0
     d=$STATE/sessions/alpha
     pub=$(cat "$d/id_ed25519.pub")
-    assert_log_before "min session exec alpha sh -c <script> $TOOL $pub" "min session exec alpha $SSHD_ARGV"
+    assert_log_before "min session exec $ID_A sh -c <script> $TOOL $pub" "min session exec $ID_A $SSHD_ARGV"
     assert_file "$d/known_hosts" "${HP}alpha ssh-ed25519 AAAAFAKE"
-    assert_out_eq "sshd-stub [session] [exec] [alpha] [/usr/sbin/sshd] [-i] [-e] [-f] [/dev/null] [-h] [/home/.ssh/$TOOL/host_ed25519] [-o] [LogLevel=ERROR] [-o] [PidFile=none] [-o] [StrictModes=no] [-o] [PubkeyAuthentication=yes] [-o] [PasswordAuthentication=no] [-o] [KbdInteractiveAuthentication=no] [-o] [AuthorizedKeysFile /home/.ssh/$TOOL/authorized_keys] [-o] [PermitUserEnvironment=yes] [-o] [AllowTcpForwarding=yes] [-o] [GatewayPorts=no] [-o] [AllowAgentForwarding=no] [-o] [X11Forwarding=no] [-o] [PrintMotd=no] [-o] [PrintLastLog=no] [-o] [UseDNS=no] [-o] [Subsystem sftp internal-sftp]"
+    assert_out_eq "sshd-stub [session] [exec] [$ID_A] [/usr/sbin/sshd] [-i] [-e] [-f] [/dev/null] [-h] [/home/.ssh/$TOOL/host_ed25519] [-o] [LogLevel=ERROR] [-o] [PidFile=none] [-o] [StrictModes=no] [-o] [PubkeyAuthentication=yes] [-o] [PasswordAuthentication=no] [-o] [KbdInteractiveAuthentication=no] [-o] [AuthorizedKeysFile /home/.ssh/$TOOL/authorized_keys] [-o] [PermitUserEnvironment=yes] [-o] [AllowTcpForwarding=yes] [-o] [GatewayPorts=no] [-o] [AllowAgentForwarding=no] [-o] [X11Forwarding=no] [-o] [PrintMotd=no] [-o] [PrintLastLog=no] [-o] [UseDNS=no] [-o] [Subsystem sftp internal-sftp]"
     grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8} alpha ok$' "$STATE/proxy.log" || fail "proxy.log: $(cat "$STATE/proxy.log")"
     assert_no_file "$HOME/.ssh"
 }
@@ -1810,8 +1833,8 @@ case_completions_parse() {
 case_sessions_lists_names() {
     own alpha
     cat > "$FIXTURES/sessions.json" <<JSON
-{"sessions":[{"id":"ID-A","name":"alpha","project_path":"$AP","status":"active"},
- {"id":"ID-B","name":"beta","project_path":"$T/beta-proj","status":"active"}]}
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$ID_B","name":"beta","project_path":"$T/beta-proj","status":"active"}]}
 JSON
     run _sessions
     assert_out_eq alpha
@@ -1956,8 +1979,8 @@ y
 ' gc
     assert_rc 0
     grep -q gamma "$T/out" || fail "gamma was idle when gc listed: $(cat "$T/out")"
-    assert_log_contains "min session destroy beta"
-    assert_log_not_contains "min session destroy gamma"
+    assert_log_contains "min session destroy $ID_B"
+    assert_log_not_contains "min session destroy $ID_G"
     assert_err_contains "gamma is in use now; not asking"
     ! grep -qF "Destroy Minimal session gamma" "$T/err" || fail "asked about gamma"
 }
@@ -1966,7 +1989,7 @@ y
 case_bad_session_name_refused() {
     installed
     cat > "$FIXTURES/sessions.json" <<JSON
-{"sessions":[{"id":"ID-X","name":"x; touch PWN #","project_path":"$AP","status":"active"}]}
+{"sessions":[{"id":"22222222-0000-4000-8000-000000000002","name":"x; touch PWN #","project_path":"$AP","status":"active"}]}
 JSON
     reset_log
     run attach 'x; touch PWN #'
@@ -2008,6 +2031,853 @@ case_gc_no_own_sessions_yet() {
     ! grep -q "min ls failed" "$T/err" || fail "gc died: $(cat "$T/err")"
 }
 
+# ---- box ids -------------------------------------------------------------------
+# Since min 0.8 (gominimal/minimal#2756) boxes may share a name, so min-vscode
+# reaches its own box by the id it recorded in sessions/NAME/id.
+
+OURS=0a0a0a0a-0000-4000-8000-0000000000a0     # min-vscode's box named default (stopped)
+THEIRS=0b0b0b0b-0000-4000-8000-0000000000b0   # another tool's, same name (running)
+THIRD=0c0c0c0c-0000-4000-8000-0000000000c0    # another tool's, same name (stopped)
+
+# shared_default: alpha plus two boxes named default, ours stopped (older),
+# another tool's running (min would pick it for the name).
+shared_default() {
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$OURS","name":"default","project_path":"$T/vscode-box","status":"stopped"},
+ {"id":"$THEIRS","name":"default","project_path":"$T/herdr-box","status":"active"}]}
+JSON
+}
+# ours_default: our key dir for default, its id recorded.
+ours_default() { mkdir -p "$STATE/sessions/default"; printf '%s\n' "$OURS" > "$STATE/sessions/default/id"; }
+
+case_ids_shared_name_reaches_ours() {
+    shared_default; ours_default
+    run _proxy default
+    assert_rc 0
+    assert_log_contains "min session exec $OURS sh -c <script>"
+    assert_log_contains "min session exec $OURS /usr/sbin/sshd -i"
+    assert_log_not_contains "session exec default"
+    assert_file "$STATE/sessions/default/id" "$OURS"
+    reset_log
+    run ssh default -- true
+    assert_rc 0
+    assert_log_contains "min session exec $OURS sh -c <script>"
+    assert_log_not_contains "session exec default"
+    # the one own box per name, and only ours, wherever one is listed
+    run _sessions
+    assert_out_eq default
+    own alpha
+    run _sessions
+    assert_out_eq "alpha
+default"
+    run status --json
+    assert_rc 0
+    [ "$(jq -c 'map(select(.name == "default")) | map([.id, .own])' "$T/out")" = "[[\"$OURS\",true],[\"$THEIRS\",false]]" ] \
+        || fail "status --json: $(cat "$T/out")"
+    run gc --dry-run
+    assert_rc 0
+    ! grep -q '^default ' "$T/out" || fail "gc offered a stopped or foreign default: $(cat "$T/out")"
+    # destroy by id; theirs stays
+    reset_log
+    run destroy -y default
+    assert_rc 0
+    assert_log_contains "min session destroy $OURS"
+    assert_no_file "$STATE/sessions/default"
+    [ "$(jq -r --arg i "$THEIRS" 'any(.sessions[]; .id == $i)' "$FIXTURES/sessions.json")" = true ] \
+        || fail "the other tool's box was destroyed"
+    # an explicit default now names another tool's box, and there are two: refused
+    jq --arg i "$THIRD" --arg p "$T/third" '.sessions += [{"id":$i,"name":"default","project_path":$p,"status":"stopped"}]' \
+        "$FIXTURES/sessions.json" > "$T/s.json" && mv "$T/s.json" "$FIXTURES/sessions.json"
+    reset_log
+    run destroy -y default
+    assert_rc 1
+    assert_err_contains "Several boxes are named default, and none is $TOOL's. Give the others new names with: min session rename ID NEW (min ls --json lists their ids)."
+    assert_log_not_contains "session destroy"
+    run attach default --no-window
+    assert_rc 1
+    assert_err_contains "Several boxes are named default, and none is $TOOL's."
+    assert_log_not_contains "session exec"
+}
+
+# open -n NAME with NAME shared and none of them ours: no third box beside them
+case_ids_open_shared_name_refused() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    shared_default
+    run open "$P" -n default --no-window
+    assert_rc 1
+    assert_err_contains "Several boxes are named default, and none is $TOOL's."
+    assert_log_not_contains "session activate"
+    assert_log_not_contains "session exec"
+    # ours among them: reused by its id
+    ours_default
+    run open -n default --no-window
+    assert_rc 0
+    assert_log_contains "min session exec $OURS sh -c <script>"
+    assert_log_not_contains "session activate"
+}
+
+# a key dir from before ids, and exactly one box of that name: its id is adopted
+case_ids_legacy_unique_adopted() {
+    own_legacy alpha
+    run _sessions
+    assert_out_eq alpha
+    assert_no_file "$STATE/sessions/alpha/id"   # completions only report
+    run ssh alpha -- true
+    assert_rc 0
+    assert_log_contains "min session exec $ID_A sh -c <script>"
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+}
+
+# a key dir from before ids, and several boxes of that name: not own, never
+# reached by name, doctor says why, and an explicit NAME dies saying so
+case_ids_legacy_ambiguous_not_own() {
+    shared_default
+    mkdir -p "$STATE/sessions/default"
+    printf 'box\n' > "$STATE/sessions/default/user"
+    mkdir -p "$STATE/created" && : > "$STATE/created/default"
+    run _sessions
+    assert_rc 0
+    assert_out_eq ""
+    [ ! -s "$T/err" ] || fail "_sessions warned: $(cat "$T/err")"
+    for c in "_proxy default" "ssh default" "attach default --no-window" "destroy -y default"; do
+        reset_log
+        # shellcheck disable=SC2086  # a command and its words
+        run $c
+        assert_rc 1
+        assert_err_contains "several boxes are named default, and $TOOL cannot tell which is its own"
+        assert_log_not_contains "session exec"
+        assert_log_not_contains "session destroy"
+    done
+    assert_no_file "$STATE/sessions/default/id"
+    run status --json
+    [ "$(jq -c 'map(select(.name == "default")) | map(.own)' "$T/out")" = '[false,false]' ] || fail "status --json: $(cat "$T/out")"
+    # no stanza: ssh falls to the catch-all, never a by-name exec
+    run ssh-config --print
+    assert_rc 0
+    ! grep -q "^Host ${HP}default\$" "$T/out" || fail "a stanza for an ambiguous box: $(cat "$T/out")"
+    run doctor
+    assert_out_contains "several boxes are named default; $TOOL cannot tell which is its own"
+    # the other box goes: default is ours again (adopted)
+    jq --arg i "$THEIRS" '.sessions |= map(select(.id != $i))' "$FIXTURES/sessions.json" > "$T/s.json" \
+        && mv "$T/s.json" "$FIXTURES/sessions.json"
+    run _sessions
+    assert_out_eq default
+    run ssh default -- true
+    assert_rc 0
+    assert_file "$STATE/sessions/default/id" "$OURS"
+}
+
+# activate records the new box's id: found by id, for -n and for min's names
+case_ids_activate_records_id() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    sessions_after beta "$P"
+    run new "$P" -n beta --no-window
+    assert_rc 0
+    assert_file "$STATE/sessions/beta/id" "$(id_of beta)"
+    assert_log_contains "min session exec $(id_of beta) sh -c <script>"
+    # min names it; a stopped box of the same name already there is not it
+    rm -rf "$STATE/sessions/beta"; default_fixtures
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$THEIRS","name":"proj-1a2b","project_path":"$P","status":"stopped"}]}
+JSON
+    jq --arg i "$OURS" --arg p "$P" '.sessions += [{"id":$i,"name":"proj-1a2b","project_path":$p,"status":"active"}]' \
+        "$FIXTURES/sessions.json" > "$FIXTURES/sessions.after.json"
+    reset_log
+    run new "$P" --no-window
+    assert_rc 0
+    assert_out_eq "${HP}proj-1a2b"
+    assert_file "$STATE/sessions/proj-1a2b/id" "$OURS"
+    assert_log_contains "min session exec $OURS sh -c <script>"
+    # -n NAME: the one new id named NAME, not an older box of that name
+    rm -rf "$STATE/sessions/proj-1a2b"
+    cp "$FIXTURES/sessions.after.json" "$FIXTURES/sessions.json"
+    jq --arg p "$P" '.sessions += [{"id":"12121212-0000-4000-8000-000000000012","name":"gone-too","project_path":$p,"status":"active"}]' \
+        "$FIXTURES/sessions.json" > "$FIXTURES/sessions.after.json"
+    run new "$P" -n other --no-window
+    assert_rc 1
+    assert_err_contains "activate made no session other"
+}
+
+# in use: an id in ps maps back to its name; a bare name still counts
+case_ids_in_use_maps_id() {
+    own alpha; printf '%s\n' "$ID_A" > "$STATE/sessions/alpha/id"
+    exec_line 101 1 "$ID_A"
+    run status --json
+    assert_rc 0
+    [ "$(jq -c 'map(select(.name == "alpha")) | map([.id, .in_use])' "$T/out")" = "[[\"$ID_A\",true]]" ] \
+        || fail "status --json: $(cat "$T/out")"
+    run gc --dry-run
+    assert_out_contains "no active sessions without an ssh client"
+    run destroy -y --if-idle alpha
+    assert_rc 3
+    assert_log_not_contains "session destroy"
+    : > "$FIXTURES/ps.txt"
+    exec_line 101 1 alpha
+    run status --json
+    [ "$(jq -c 'map(select(.name == "alpha")) | map(.in_use)' "$T/out")" = '[true]' ] || fail "bare name: $(cat "$T/out")"
+    # another box's id is not ours
+    : > "$FIXTURES/ps.txt"
+    exec_line 101 1 "$THEIRS"
+    run status --json
+    [ "$(jq -c 'map(select(.name == "alpha")) | map(.in_use)' "$T/out")" = '[false]' ] || fail "foreign id: $(cat "$T/out")"
+    run destroy -y --if-idle alpha
+    assert_rc 0
+    assert_log_contains "min session destroy $ID_A"
+}
+
+# a corrupted id file never reaches min, the stanza or a list
+case_ids_corrupt_id_refused() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    alpha_facts
+    for bad in 'x; touch PWN #' "$ID_A
+$ID_A" "$(printf '%s' "$ID_A" | tr a A)" "../$ID_A"; do
+        printf '%s\n' "$bad" > "$STATE/sessions/alpha/id"
+        reset_log
+        for c in "_proxy alpha" "ssh alpha" "attach alpha --no-window" "destroy -y alpha"; do
+            # shellcheck disable=SC2086  # a command and its words
+            run $c
+            assert_rc 1
+            assert_err_contains "$STATE/sessions/alpha/id is not a session id; not using it"
+        done
+        assert_log_not_contains "session exec"
+        assert_log_not_contains "session destroy"
+        assert_log_not_contains "PWN"
+        run _sessions
+        assert_out_eq ""
+        run ssh-config --print
+        ! grep -q "^Host ${HP}alpha\$" "$T/out" || fail "a stanza with a bad id: $(cat "$T/out")"
+        run doctor
+        assert_out_contains "$STATE/sessions/alpha/id is not a session id"
+    done
+    [ ! -e PWN ] && [ ! -e "$T/PWN" ] || fail "an id was run"
+}
+
+# the stanza and the settings entry go once min no longer lists our id, even
+# when another box took the name; _proxy then refuses it rather than
+# reaching that box
+case_ids_gone_box_not_taken_over() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    alpha_facts
+    run ssh-config
+    assert_file_contains "$HOME/$CONF" "Host ${HP}alpha"
+    run config
+    assert_rc 0
+    [ "$(settings_get '.["remote.SSH.remotePlatform"] | has("'"${HP}alpha"'")')" = true ] || fail "no settings entry for alpha"
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"$THEIRS","name":"alpha","project_path":"$T/herdr","status":"active"}]}
+JSON
+    reset_log
+    run _proxy alpha
+    assert_rc 1
+    assert_err_contains "your box alpha is gone; another box now has the name"
+    assert_log_not_contains "session exec"
+    run ssh-config
+    assert_file_not_contains "$HOME/$CONF" "Host ${HP}alpha"
+    run config
+    [ "$(settings_get '.["remote.SSH.remotePlatform"] // {} | has("'"${HP}alpha"'")')" = false ] || fail "settings still name alpha"
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+}
+
+# destroying ours while another box keeps the name: ours is gone (its id no
+# longer listed), so its keys go, and the other box stays
+case_ids_destroy_gone_by_id() {
+    shared_default; ours_default
+    # min refuses: ours is still listed, so nothing of ours is dropped
+    echo 1 > "$FIXTURES/destroy.rc"
+    run destroy -y default
+    assert_rc 1
+    assert_file "$STATE/sessions/default/id" "$OURS"
+    rm -f "$FIXTURES/destroy.rc"
+    run destroy -y default
+    assert_rc 0
+    assert_log_contains "min session destroy $OURS"
+    assert_no_file "$STATE/sessions/default"
+    [ "$(jq -r --arg i "$THEIRS" 'any(.sessions[]; .id == $i)' "$FIXTURES/sessions.json")" = true ] \
+        || fail "the other tool's box was destroyed"
+}
+
+# taken_default: ours (OURS, recorded for default) is gone; another tool's
+# box is the only one named default now.
+taken_default() {
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$THEIRS","name":"default","project_path":"$T/herdr-box","status":"active"}]}
+JSON
+    rm -rf "$STATE/sessions/default"; ours_default
+}
+
+# ours gone, another box took the name: never reached in its place, by any path
+case_ids_gone_name_taken_never_reached() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    taken_default
+    for c in "attach default --no-window" "ssh default" "open -n default --no-window" "_proxy default"; do
+        reset_log
+        # shellcheck disable=SC2086  # a command and its words
+        run $c
+        assert_rc 1
+        assert_err_contains "your box default is gone; another box now has the name (remove $STATE/sessions/default to reach it)"
+        assert_log_not_contains "session exec"
+        assert_log_not_contains "session activate"
+        assert_file "$STATE/sessions/default/id" "$OURS"
+    done
+    # destroy NAME drops only our record; the other box stays
+    reset_log
+    run destroy -y default
+    assert_rc 0
+    assert_err_contains "default is gone; removed its keys"
+    assert_log_not_contains "session destroy"
+    assert_no_file "$STATE/sessions/default"
+    [ "$(jq -r --arg i "$THEIRS" 'any(.sessions[]; .id == $i)' "$FIXTURES/sessions.json")" = true ] \
+        || fail "the other tool's box was destroyed"
+    # several others now share the name: still "ours is gone", never "cannot tell"
+    taken_default
+    jq --arg i "$THIRD" '.sessions += [{"id":$i,"name":"default","project_path":"/t","status":"stopped"}]' \
+        "$FIXTURES/sessions.json" > "$T/s.json" && mv "$T/s.json" "$FIXTURES/sessions.json"
+    run attach default --no-window
+    assert_rc 1
+    assert_err_contains "your box default is gone"
+    run destroy -y default
+    assert_rc 0
+    assert_log_not_contains "session destroy"
+    # with no box of that name left, open -n makes ours again, with a new id
+    taken_default
+    jq --arg i "$THEIRS" '.sessions |= map(select(.id != $i))' "$FIXTURES/sessions.json" > "$T/s.json" \
+        && mv "$T/s.json" "$FIXTURES/sessions.json"
+    sessions_after default "$P"
+    reset_log
+    run open "$P" -n default --no-window
+    assert_rc 0
+    assert_file "$STATE/sessions/default/id" "$(id_of default)"
+}
+
+# ours renamed outside min-vscode: destroy NAME refuses (never drops a live
+# box's records), and so does every other path
+case_ids_renamed_outside_refused() {
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"$OURS","name":"elsewhere","project_path":"$T/vscode-box","status":"active"}]}
+JSON
+    ours_default
+    for c in "destroy -y default" "attach default --no-window" "ssh default" "_proxy default"; do
+        reset_log
+        # shellcheck disable=SC2086  # a command and its words
+        run $c
+        assert_rc 1
+        assert_err_contains "default was renamed outside $TOOL, to elsewhere. To use it here again: min session rename $OURS default."
+        assert_log_not_contains "session destroy"
+        assert_log_not_contains "session exec"
+    done
+    assert_file "$STATE/sessions/default/id" "$OURS"
+    run doctor
+    assert_out_contains "default was renamed outside $TOOL"
+    assert_out_contains "min session rename $OURS default"
+}
+
+# prepare never replaces a recorded id with another one
+case_ids_prepare_keeps_recorded_id() {
+    shared_default; ours_default
+    sed '/^# ---- main/,$d' "$BIN" > "$T/lib"
+    sh -c '. "$1"; MIN=$2; prepare default "$3"' sh "$T/lib" "$MIN_BIN" "$THEIRS" >"$T/out" 2>"$T/err"; RC=$?
+    assert_rc 1
+    assert_err_contains "records box $OURS, not $THEIRS; not using it"
+    assert_log_not_contains "session exec"
+    assert_file "$STATE/sessions/default/id" "$OURS"
+}
+
+# a failed min ls keeps every stanza, those of key dirs from before ids too
+case_ids_ls_failure_keeps_legacy_stanza() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    alpha_facts
+    run ssh-config
+    assert_file_contains "$HOME/$CONF" "Host ${HP}alpha"
+    rm -f "$STATE/sessions/alpha/id"
+    printf 1 > "$FIXTURES/ls.fail-from"
+    run ssh-config
+    assert_file_contains "$HOME/$CONF" "Host ${HP}alpha"
+}
+
+# min lists our id with no name (min's name is optional): still listed, so
+# never gone; refused, everything kept
+case_ids_unnamed_listed_not_gone() {
+    printf '{"sessions":[{"id":"%s","name":null,"project_path":"%s","status":"stopped"}]}\n' "$ID_A" "$AP" \
+        > "$FIXTURES/sessions.json"
+    own alpha; printf '%s\n' "$ID_A" > "$STATE/sessions/alpha/id"
+    for c in "destroy -y alpha" "attach alpha --no-window" "_proxy alpha"; do
+        reset_log
+        # shellcheck disable=SC2086  # a command and its words
+        run $c
+        assert_rc 1
+        assert_err_contains "min lists box alpha with no name now, so $TOOL leaves it alone. To use it here again: min session rename $ID_A alpha."
+        assert_log_not_contains "session destroy"
+        assert_log_not_contains "session exec"
+    done
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+    run _sessions
+    assert_out_eq ""
+}
+
+# doctor: a key dir whose box is gone gets an info row saying how to forget it
+case_ids_doctor_gone_row() {
+    own alpha; printf '%s\n' "$THEIRS" > "$STATE/sessions/alpha/id"
+    printf '{"sessions":[]}\n' > "$FIXTURES/sessions.json"
+    run doctor
+    assert_out_contains "alpha's box is gone"
+    assert_out_contains "$TOOL destroy alpha forgets it"
+}
+
+# commands that only report never adopt a legacy key dir's id: --print
+# writes nothing under STATE; status, completions, config --print and doctor
+# write no id
+case_ids_report_only_no_adopt() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    alpha_facts; rm -f "$STATE/sessions/alpha/id"
+    (cd "$STATE" && find . -exec ls -ld {} + | cksum) > "$T/before"
+    run ssh-config --print
+    assert_rc 0
+    grep -q "^Host ${HP}alpha\$" "$T/out" || fail "--print left out the legacy stanza: $(cat "$T/out")"
+    (cd "$STATE" && find . -exec ls -ld {} + | cksum) > "$T/after"
+    cmp -s "$T/before" "$T/after" || fail "--print changed something under STATE"
+    assert_no_file "$STATE/sessions/alpha/id"
+    run status --json
+    [ "$(jq -c 'map(select(.name == "alpha")) | map(.own)' "$T/out")" = '[true]' ] || fail "status: $(cat "$T/out")"
+    run status
+    run _sessions
+    assert_out_eq alpha
+    run config --print
+    assert_rc 0
+    assert_out_contains "${HP}alpha"
+    run gc --dry-run
+    assert_rc 0
+    # the install gates and the extension's startup setup act on no one box
+    for c in "ssh-config" "config" "setup" "config --remove" "ssh-config --remove" "setup --remove"; do
+        # shellcheck disable=SC2086  # a command and its words
+        run $c
+        assert_no_file "$STATE/sessions/alpha/id"
+    done
+    run doctor
+    assert_out_contains "alpha will adopt box $ID_A when you open, attach or ssh to it"
+    assert_no_file "$STATE/sessions/alpha/id"
+    # a command that acts on it adopts it
+    run ssh alpha -- true
+    assert_rc 0
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+}
+
+# status skips a session min lists with no name: no field shifts
+case_ids_status_skips_unnamed() {
+    own alpha
+    printf '{"sessions":[{"id":"%s","name":null,"project_path":"/n","status":"stopped"},{"id":"%s","name":"alpha","project_path":"%s","status":"active"}]}\n' \
+        "$THEIRS" "$ID_A" "$AP" > "$FIXTURES/sessions.json"
+    run status --json
+    assert_rc 0
+    [ "$(jq -c 'map([.name, .id, .status, .own])' "$T/out")" = "[[\"alpha\",\"$ID_A\",\"active\",true]]" ] \
+        || fail "status --json: $(cat "$T/out")"
+    run status
+    assert_rc 0
+    ! grep -q "$THEIRS" "$T/out" || fail "status table: $(cat "$T/out")"
+}
+
+# a min ls that exits 0 with output jq cannot read is a failed one: nothing
+# of ours is pruned, and destroy fails
+case_ids_unreadable_ls_keeps_everything() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    alpha_facts
+    run ssh-config
+    run config
+    assert_rc 0
+    assert_file_contains "$HOME/$CONF" "Host ${HP}alpha"
+    printf 'warning: update available\n{"sessions":[]}\n' > "$FIXTURES/sessions.json"
+    reset_log
+    run destroy -y alpha
+    assert_rc_nonzero
+    assert_err_contains "min ls failed"
+    assert_log_not_contains "session destroy"
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+    run ssh-config
+    assert_file_contains "$HOME/$CONF" "Host ${HP}alpha"
+    run config
+    [ "$(settings_get '.["remote.SSH.remotePlatform"] | has("'"${HP}alpha"'")')" = true ] || fail "settings entry for alpha pruned"
+    run attach alpha --no-window
+    assert_rc 1
+    run status --json
+    assert_rc 1
+    # empty output, and JSON with no session list, are no listing either
+    for junk in '' '{}' '{"sessions":null}' '{"level":"info"}
+{"sessions":[]}'; do
+        printf '%s' "$junk" > "$FIXTURES/sessions.json"
+        reset_log
+        run destroy -y alpha
+        assert_rc_nonzero
+        assert_log_not_contains "session destroy"
+        assert_file "$STATE/sessions/alpha/id" "$ID_A"
+    done
+}
+
+# a legacy key dir and a box of that name min lists with no id: never "no
+# box", so destroy keeps the keys and says why
+case_ids_listed_without_id_not_gone() {
+    own_legacy alpha; printf 'box\n' > "$STATE/sessions/alpha/user"
+    printf '{"sessions":[{"id":null,"name":"alpha","project_path":"/x","status":"active"}]}\n' > "$FIXTURES/sessions.json"
+    reset_log
+    run destroy -y alpha
+    assert_rc 1
+    assert_err_contains "min lists a box named alpha with no session id $TOOL can reach it by"
+    assert_log_not_contains "session destroy"
+    [ -d "$STATE/sessions/alpha" ] || fail "keys dropped though min lists alpha"
+    run doctor
+    assert_out_contains "min lists a box named alpha with no session id"
+}
+
+# --own (the extension's view, maybe stale): a name that is no own box any
+# more never reaches the box that took it
+case_ids_own_flag_refuses_foreign() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    printf '{"sessions":[{"id":"%s","name":"alpha","project_path":"/herdr","status":"active"}]}\n' "$THEIRS" > "$FIXTURES/sessions.json"
+    for c in "destroy -y --own alpha" "destroy -y --if-idle --own alpha" "attach --own alpha --no-window"; do
+        reset_log
+        # shellcheck disable=SC2086  # a command and its words
+        run $c
+        assert_rc 1
+        assert_err_contains "alpha is not a box of $TOOL's"
+        assert_log_not_contains "session destroy"
+        assert_log_not_contains "session exec"
+    done
+    # our own box passes
+    own alpha
+    default_fixtures
+    reset_log
+    run attach --own alpha --no-window
+    assert_rc 0
+    assert_log_contains "min session exec $ID_A sh -c <script>"
+    run destroy -y --own alpha
+    assert_rc 0
+    assert_log_contains "min session destroy $ID_A"
+}
+
+# only the box a command acts on adopts: the stanza and settings refresh
+# after a connect never writes another legacy key dir's id
+case_ids_adopt_only_target() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$ID_B","name":"beta","project_path":"$T/beta-proj","status":"active"}]}
+JSON
+    own_legacy alpha beta
+    printf 'box\n' > "$STATE/sessions/beta/user"
+    run config
+    assert_rc 0
+    run ssh alpha -- true
+    assert_rc 0
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+    assert_no_file "$STATE/sessions/beta/id"
+    assert_file_contains "$HOME/$CONF" "Host ${HP}beta"   # still own, unadopted
+    rm -f "$STATE/sessions/alpha/id"
+    run attach alpha --no-window
+    assert_rc 0
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+    assert_no_file "$STATE/sessions/beta/id"
+    [ "$(settings_get '.["remote.SSH.remotePlatform"] | has("'"${HP}beta"'")')" = true ] || fail "beta's settings entry dropped"
+}
+
+# never adopt and destroy in one step: the view's destroy --own and gc leave
+# a key dir with no id alone; a plain destroy NAME from a terminal may
+case_ids_no_adopt_and_destroy() {
+    own_legacy alpha
+    reset_log
+    for c in "destroy -y --own alpha" "destroy -y --if-idle --own alpha"; do
+        # shellcheck disable=SC2086  # a command and its words
+        run $c
+        assert_rc 1
+        assert_err_contains "alpha has no recorded box id yet; attach it once so $TOOL records it, or run $TOOL destroy alpha in a terminal"
+    done
+    run_stdin 'y
+' gc
+    assert_rc 0
+    assert_out_contains "no id recorded (attach alpha once)"
+    assert_err_contains "alpha has no recorded box id; not asking"
+    ! grep -qF "Destroy Minimal session alpha" "$T/err" || fail "gc asked about alpha"
+    assert_log_not_contains "session destroy"
+    assert_no_file "$STATE/sessions/alpha/id"
+    run destroy -y alpha
+    assert_rc 0
+    assert_log_contains "min session destroy $ID_A"
+}
+
+# status: a foreign box is in use by its id in ps
+case_ids_status_foreign_in_use_by_id() {
+    own alpha
+    printf '{"sessions":[{"id":"%s","name":"alpha","project_path":"%s","status":"active"},{"id":"%s","name":"herdr-box","project_path":"/h","status":"active"}]}\n' \
+        "$ID_A" "$AP" "$THEIRS" > "$FIXTURES/sessions.json"
+    exec_line 101 1 "$THEIRS"
+    run status --json
+    assert_rc 0
+    [ "$(jq -c 'map([.name, .own, .in_use])' "$T/out")" = '[["alpha",true,false],["herdr-box",false,true]]' ] \
+        || fail "status --json: $(cat "$T/out")"
+}
+
+# a failed min ls keeps the stanzas, but not one with a bad id
+case_ids_ls_failure_drops_bad_id_stanza() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    alpha_facts
+    run ssh-config
+    assert_file_contains "$HOME/$CONF" "Host ${HP}alpha"
+    echo 'not-an-id' > "$STATE/sessions/alpha/id"
+    printf 1 > "$FIXTURES/ls.fail-from"
+    run ssh-config
+    assert_file_not_contains "$HOME/$CONF" "Host ${HP}alpha"
+}
+
+# destroy --if-idle NAME of another tool's box (no key dir) in use by its id: exit 3
+case_ids_if_idle_foreign_in_use() {
+    printf '{"sessions":[{"id":"%s","name":"theirs","project_path":"/h","status":"active"}]}\n' "$THEIRS" > "$FIXTURES/sessions.json"
+    exec_line 101 1 "$THEIRS"
+    reset_log
+    run destroy -y --if-idle theirs
+    assert_rc 3
+    assert_log_not_contains "session destroy"
+}
+
+# every destroy and attach the extension sends carries --own
+case_ids_extension_passes_own() {
+    calls=$(grep -hoE "run\(\[('[^']*', )*'(destroy|attach)'[^]]*\]" "$ROOT"/extension/src/*.ts)
+    [ -n "$calls" ] || fail "no destroy/attach call found in the extension"
+    printf '%s\n' "$calls" | while IFS= read -r c; do
+        printf '%s' "$c" | grep -qF "'--own'" || fail "extension call without --own: $c"
+    done
+}
+
+# a session list min ls cannot hand over whole is no listing; and a jq
+# failure in pick_id is "could not read", never "none"
+case_ids_unreadable_entry_not_none() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    alpha_facts
+    printf '{"sessions":[{"id":"%s","name":"alpha","project_path":"%s","status":"active"},1]}\n' "$ID_A" "$AP" > "$FIXTURES/sessions.json"
+    reset_log
+    run destroy -y alpha
+    assert_rc 1
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+    run open "$P" -n alpha --no-window
+    assert_rc 1
+    assert_log_not_contains "session destroy"
+    assert_log_not_contains "session activate"
+    sed '/^# ---- main/,$d' "$BIN" > "$T/lib"
+    # shellcheck disable=SC2016  # expanded by the inner sh
+    sh -c '. "$1"; s=0; box_id alpha "{\"sessions\":[1]}" || s=$?; printf "%s|%s" "$s" "$BWHY"' sh "$T/lib" >"$T/out" 2>"$T/err"
+    assert_out_eq "2|could not read min ls; not using alpha"
+}
+
+# an own box with no id file yet, reached by its id: in use for status and gc
+case_ids_legacy_in_use_by_id() {
+    own_legacy alpha
+    exec_line 101 1 "$ID_A"
+    run status --json
+    assert_rc 0
+    [ "$(jq -c 'map(select(.name == "alpha")) | map([.own, .in_use])' "$T/out")" = '[[true,true]]' ] \
+        || fail "status --json: $(cat "$T/out")"
+    run gc --dry-run
+    assert_out_contains "no active sessions without an ssh client"
+    assert_no_file "$STATE/sessions/alpha/id"
+}
+
+# two_boxes: alpha and beta listed.
+two_boxes() {
+    cat > "$FIXTURES/sessions.json" <<JSON
+{"sessions":[{"id":"$ID_A","name":"alpha","project_path":"$AP","status":"active"},
+ {"id":"$ID_B","name":"beta","project_path":"$T/beta-proj","status":"active"}]}
+JSON
+}
+
+# a bystander legacy key dir adopts nothing across open's reuse, gc answered
+# N, destroy's cwd lookup and the attach picker
+case_ids_bystander_never_adopts() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    two_boxes
+    own alpha; own_legacy beta
+    run open "$AP" --no-window
+    assert_rc 0
+    assert_out_eq "${HP}alpha"
+    assert_no_file "$STATE/sessions/beta/id"
+    run_stdin 'n
+n
+' gc
+    assert_rc 0
+    assert_no_file "$STATE/sessions/beta/id"
+    reset_log
+    (cd "$AP" && sh "$BIN" destroy -y >"$T/out" 2>"$T/err" </dev/null)
+    assert_log_contains "min session destroy $ID_A"
+    assert_no_file "$STATE/sessions/beta/id"
+    # the attach picker: alpha (its own id), beta listed beside it
+    two_boxes; own alpha
+    reset_log
+    python3 - "$BIN" > "$T/out" 2> "$T/err" <<'PY'
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("sh", ["sh", sys.argv[1], "attach", "--no-window"])
+def read():
+    try: return os.read(fd, 1024)
+    except OSError: return b""
+buf = b""
+while b"session number: " not in buf:
+    b = read()
+    if not b: break
+    buf += b
+os.write(fd, b"1\n")
+while read(): pass
+_, st = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(st))
+PY
+    RC=$?
+    assert_rc 0
+    assert_log_contains "min session exec $ID_A sh -c <script>"
+    assert_no_file "$STATE/sessions/beta/id"
+}
+
+# destroy with no NAME (the cwd lookup) never adopts and destroys in one step
+case_ids_cwd_destroy_no_adopt() {
+    own_legacy alpha
+    printf '{"sessions":[{"id":"%s","name":"alpha","project_path":"%s","status":"active"}]}\n' "$THEIRS" "$AP" > "$FIXTURES/sessions.json"
+    reset_log
+    (cd "$AP" && sh "$BIN" destroy -y >"$T/out" 2>"$T/err" </dev/null); RC=$?
+    assert_rc 1
+    assert_err_contains "alpha has no recorded box id yet"
+    assert_log_not_contains "session destroy"
+    assert_no_file "$STATE/sessions/alpha/id"
+}
+
+# status --json: recorded is true only for the id in sessions/NAME/id
+case_ids_status_recorded() {
+    two_boxes
+    own alpha; own_legacy beta
+    run status --json
+    assert_rc 0
+    [ "$(jq -c 'map([.name, .own, .recorded])' "$T/out")" = '[["alpha",true,true],["beta",true,false]]' ] \
+        || fail "status --json: $(cat "$T/out")"
+}
+
+# track_orphans: an own box in use by its id restarts its idle age
+case_ids_orphan_age_restarts_by_id() {
+    own alpha
+    exec_line 101 1 "$ID_A"
+    age alpha 7200
+    run status
+    assert_rc 0
+    a=$(cat "$STATE/orphan/alpha")
+    [ $(($(date +%s) - a)) -lt 60 ] || fail "orphan/alpha not restarted: $a"
+}
+
+# a bare-name connection counts for the own box of that name, not the
+# foreign one beside it
+case_ids_bare_name_in_use_own_only() {
+    own alpha
+    printf '{"sessions":[{"id":"%s","name":"alpha","project_path":"%s","status":"active"},{"id":"%s","name":"alpha","project_path":"/h","status":"active"}]}\n' \
+        "$ID_A" "$AP" "$THEIRS" > "$FIXTURES/sessions.json"
+    exec_line 101 1 alpha
+    run status --json
+    assert_rc 0
+    [ "$(jq -c 'map([.id, .own, .in_use])' "$T/out")" = "[[\"$ID_A\",true,true],[\"$THEIRS\",false,false]]" ] \
+        || fail "status --json: $(cat "$T/out")"
+}
+
+# open -n NAME PATH on a legacy key dir of another folder: refused before any
+# id is written
+case_ids_open_other_dir_no_adopt() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    own_legacy alpha
+    run open "$P" -n alpha --no-window
+    assert_rc 1
+    assert_err_contains "session alpha is for $AP, not $P"
+    assert_no_file "$STATE/sessions/alpha/id"
+    run new "$AP" -n alpha --no-window
+    assert_rc 1
+    assert_err_contains "session alpha already exists"
+    assert_no_file "$STATE/sessions/alpha/id"
+    # the right folder adopts, through prepare
+    run open "$AP" -n alpha --no-window
+    assert_rc 0
+    assert_file "$STATE/sessions/alpha/id" "$ID_A"
+}
+
+# destroy on a terminal: answered y, min destroys the box by its id
+case_ids_tty_destroy_by_id() {
+    own alpha
+    reset_log
+    python3 - "$BIN" > "$T/out" 2> "$T/err" <<'PY'
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("sh", ["sh", sys.argv[1], "destroy", "alpha"])
+def read():
+    try: return os.read(fd, 1024)
+    except OSError: return b""
+buf = b""
+while b"[y/N]" not in buf:
+    b = read()
+    if not b: break
+    buf += b
+os.write(fd, b"y\n")
+while read(): pass
+_, st = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(st))
+PY
+    RC=$?
+    assert_rc 0
+    assert_log_contains "min session destroy $ID_A"
+    assert_log_not_contains "min session destroy alpha"
+    assert_no_file "$STATE/sessions/alpha"
+}
+
+# destroy never writes an id: answered N on a terminal, or --if-idle while
+# in use, a legacy key dir stays unrecorded, and gc still will not ask
+case_ids_destroy_never_writes_id() {
+    own_legacy alpha
+    reset_log
+    python3 - "$BIN" > "$T/out" 2> "$T/err" <<'PY'
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("sh", ["sh", sys.argv[1], "destroy", "alpha"])
+def read():
+    try: return os.read(fd, 1024)
+    except OSError: return b""
+buf = b""
+while b"[y/N]" not in buf:
+    b = read()
+    if not b: break
+    buf += b
+os.write(fd, b"n\n")
+while read(): pass
+_, st = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(st))
+PY
+    RC=$?
+    assert_rc 0
+    assert_log_not_contains "session destroy"
+    assert_no_file "$STATE/sessions/alpha/id"
+    exec_line 101 1 "$ID_A"
+    run destroy -y --if-idle alpha
+    assert_rc 3
+    assert_no_file "$STATE/sessions/alpha/id"
+    : > "$FIXTURES/ps.txt"
+    run gc --dry-run
+    assert_rc 0
+    assert_out_contains "no id recorded (attach alpha once)"
+    assert_log_not_contains "session destroy"
+    assert_no_file "$STATE/sessions/alpha/id"
+}
+
+
+# a new session min lists with no name is never recorded as "null"
+case_ids_activate_null_name() {
+    mkdir -p "$HOME/.ssh" && : > "$HOME/$CONF"
+    jq --arg p "$P" '.sessions += [{"id":"12121212-0000-4000-8000-000000000012","name":null,"project_path":$p,"status":"active"}]' \
+        "$FIXTURES/sessions.json" > "$FIXTURES/sessions.after.json"
+    run new "$P" --no-window
+    assert_rc 1
+    assert_err_contains "not a hostname"
+    assert_no_file "$STATE/sessions/null"
+}
 CASES="
 gc_no_own_sessions_yet open_activates_and_launches_editor open_reuses_live_session_for_path open_skips_foreign_session_for_path
 open_needs_ssh_config
@@ -2040,11 +2910,22 @@ prep_regenerates_half_pair prep_keygen_failure_releases_lock prep_stale_lock_str
 open_default_loadouts_toml_forms sshconfig_lock_held_waits_then_fails
 sshconfig_two_tools_install_at_once gc_rechecks_before_each_question bad_session_name_refused
 completions_parse sessions_lists_names usage sshconfig_two_tools_coexist open_keeps_default_loadouts safety_gui_commands_absolute
+ids_report_only_no_adopt ids_status_skips_unnamed ids_unnamed_listed_not_gone ids_doctor_gone_row
+ids_destroy_gone_by_id ids_gone_name_taken_never_reached ids_renamed_outside_refused
+ids_prepare_keeps_recorded_id ids_ls_failure_keeps_legacy_stanza
+ids_shared_name_reaches_ours ids_open_shared_name_refused ids_legacy_unique_adopted
+ids_legacy_ambiguous_not_own ids_activate_records_id ids_in_use_maps_id ids_corrupt_id_refused
+ids_gone_box_not_taken_over ids_unreadable_ls_keeps_everything ids_listed_without_id_not_gone ids_own_flag_refuses_foreign
+ids_adopt_only_target ids_no_adopt_and_destroy ids_status_foreign_in_use_by_id ids_ls_failure_drops_bad_id_stanza
+ids_if_idle_foreign_in_use ids_extension_passes_own
+ids_unreadable_entry_not_none ids_legacy_in_use_by_id ids_bystander_never_adopts
+ids_cwd_destroy_no_adopt ids_status_recorded ids_orphan_age_restarts_by_id ids_bare_name_in_use_own_only
+ids_open_other_dir_no_adopt ids_tty_destroy_by_id ids_destroy_never_writes_id ids_activate_null_name
 "
 
 # Nothing under ~/.ssh unless the case opted in to ssh-config.
 ssh_untouched() {
-    case $1 in sshconfig_*|open_*|new_*|attach_*|names_*|destroy_asks*|destroy_ls_fails*|settings_*|config_*|doctor_*|setup_*|proxy_never*|prepare_rejects*|prepare_accepts*|stored_user*|safety_*|bad_session*) return 0 ;; esac
+    case $1 in sshconfig_*|open_*|new_*|attach_*|names_*|destroy_asks*|destroy_ls_fails*|settings_*|config_*|doctor_*|setup_*|proxy_never*|prepare_rejects*|prepare_accepts*|stored_user*|safety_*|bad_session*|ids_*) return 0 ;; esac
     [ ! -e "$T/home/.ssh" ] || fail "HOME/.ssh touched: $(find "$T/home/.ssh" | tr '\n' ' ')"
 }
 
