@@ -30,7 +30,12 @@ it. It is never added to
 `default_loadouts`: min-vscode activates with your `default_loadouts` plus
 `--loadout vscode` (min would drop the defaults once any `--loadout` is
 named, so min-vscode passes them on), and boxes made by other tools carry only
-their own loadouts (min-vscode can still attach to them).
+their own loadouts (min-vscode can still attach to them). When
+`min loadout list` shows a `built-in` row, min-vscode puts
+`--loadout built-in` first, for Minimal's mark, banner and `minimal:` prompt;
+its variables yield to any other loadout's. It is left out when
+`default_loadouts` already names `built-in` (your place for it is kept), when
+the list fails, or when min has no such loadout.
 
 **Settings.** See [vscode.md](vscode.md#settings-min-vscode-config).
 

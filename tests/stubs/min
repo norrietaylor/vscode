@@ -2,6 +2,7 @@
 # Stub for min: logs argv (multi-line args collapsed to <script>), serves fixtures.
 # $FIXTURES/ls.fail-from N: `min ls` fails from its Nth call on (ls.calls counts).
 # $FIXTURES/ls.fail-at N: only the Nth `min ls` fails.
+# $FIXTURES/loadouts.txt: `min loadout list` output; loadouts.fail makes it fail.
 line="min"
 for a in "$@"; do
     case $a in
@@ -13,7 +14,10 @@ done
 echo "$line" >> "$STUB_LOG"
 case "${1:-} ${2:-}" in
     "version "*) printf 'Client: minimal %s\nServer: minimald 0.7.0\n' "${STUB_MIN_VERSION:-0.7.0}" ;;
-    "loadout list") cat "$FIXTURES/loadouts.txt" 2>/dev/null ;;
+    "loadout list")
+        # loadouts.fail: min cannot list its loadouts
+        if [ -f "$FIXTURES/loadouts.fail" ]; then echo "error: bad loadout" >&2; exit 1; fi
+        cat "$FIXTURES/loadouts.txt" 2>/dev/null ;;
     "ls --json")
         n=$(($(cat "$FIXTURES/ls.calls" 2>/dev/null || echo 0) + 1)); echo "$n" > "$FIXTURES/ls.calls"
         if { [ -f "$FIXTURES/ls.fail-from" ] && [ "$n" -ge "$(cat "$FIXTURES/ls.fail-from")" ]; } \
